@@ -29,6 +29,7 @@ describe("terminalUiStateStore actions", () => {
     );
     expect(terminalUiState).toEqual({
       terminalOpen: false,
+      presentation: "drawer",
       terminalHeight: 280,
       terminalIds: [],
       activeTerminalId: "",
@@ -84,6 +85,7 @@ describe("terminalUiStateStore actions", () => {
     );
     expect(terminalUiState).toEqual({
       terminalOpen: true,
+      presentation: "drawer",
       terminalHeight: 280,
       terminalIds: [DEFAULT_THREAD_TERMINAL_ID],
       activeTerminalId: DEFAULT_THREAD_TERMINAL_ID,
@@ -202,6 +204,7 @@ describe("terminalUiStateStore actions", () => {
       terminalUiStateByThreadKey: {
         [scopedThreadKey(THREAD_REF)]: {
           terminalOpen: true,
+          presentation: "drawer",
           terminalHeight: 320,
           terminalIds: ["term-1"],
           activeTerminalId: "term-1",
@@ -212,9 +215,61 @@ describe("terminalUiStateStore actions", () => {
     });
   });
 
+  it("keeps the terminal presentation isolated per thread", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.setTerminalPresentation(THREAD_REF, "workspace");
+
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        THREAD_REF,
+      ).presentation,
+    ).toBe("workspace");
+    expect(
+      selectThreadTerminalUiState(
+        useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+        OTHER_THREAD_REF,
+      ).presentation,
+    ).toBe("drawer");
+  });
+
+  it("preserves a persisted workspace presentation during migration", () => {
+    const migrated = migratePersistedTerminalUiStateStoreState(
+      {
+        terminalUiStateByThreadKey: {
+          [scopedThreadKey(THREAD_REF)]: {
+            terminalOpen: true,
+            presentation: "workspace",
+            terminalHeight: 320,
+            terminalIds: ["term-1"],
+            activeTerminalId: "term-1",
+            terminalGroups: [{ id: "group-term-1", terminalIds: ["term-1"] }],
+            activeTerminalGroupId: "group-term-1",
+          },
+        },
+      },
+      5,
+    );
+
+    expect(migrated.terminalUiStateByThreadKey?.[scopedThreadKey(THREAD_REF)]?.presentation).toBe(
+      "workspace",
+    );
+  });
+
+  it("does not update store identity when the presentation is unchanged", () => {
+    const store = useTerminalUiStateStore.getState();
+    store.setTerminalPresentation(THREAD_REF, "workspace");
+    const before = useTerminalUiStateStore.getState();
+
+    useTerminalUiStateStore.getState().setTerminalPresentation(THREAD_REF, "workspace");
+
+    expect(useTerminalUiStateStore.getState()).toBe(before);
+  });
+
   it("resets to default and clears persisted entry when closing the last terminal", () => {
     const store = useTerminalUiStateStore.getState();
     store.newTerminal(THREAD_REF, "terminal-only");
+    store.setTerminalPresentation(THREAD_REF, "workspace");
     store.closeTerminal(THREAD_REF, "terminal-only");
 
     expect(
@@ -224,8 +279,8 @@ describe("terminalUiStateStore actions", () => {
       selectThreadTerminalUiState(
         useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
         THREAD_REF,
-      ).terminalIds,
-    ).toEqual([]);
+      ),
+    ).toMatchObject({ terminalIds: [], presentation: "drawer" });
   });
 
   it("keeps a valid active terminal after closing an active split terminal", () => {

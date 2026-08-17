@@ -1293,12 +1293,15 @@ function PullRequestsRouteView() {
       showTerminalControl={false}
       terminalAvailable={false}
       terminalOpen={false}
+      terminalWorkspaceOpen={false}
       terminalShortcutLabel={null}
+      terminalWorkspaceShortcutLabel={null}
       rightPanelAvailable={rightPanelState.surfaces.length > 0}
       rightPanelOpen={rightPanelState.isOpen}
       rightPanelShortcutLabel={null}
       liveAgentCount={0}
       onToggleTerminal={() => undefined}
+      onToggleTerminalWorkspace={() => undefined}
       onToggleRightPanel={toggleRightPanel}
     />
   );

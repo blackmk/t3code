@@ -19,6 +19,7 @@ import {
 
 interface ThreadTerminalUiState {
   terminalOpen: boolean;
+  presentation: "drawer" | "workspace";
   terminalHeight: number;
   terminalIds: string[];
   activeTerminalId: string;
@@ -46,9 +47,9 @@ export function migratePersistedTerminalUiStateStoreState(
   const persistedUiStateByThreadKey =
     candidate.terminalUiStateByThreadKey ?? candidate.terminalStateByThreadKey ?? {};
   const terminalUiStateByThreadKey = Object.fromEntries(
-    Object.entries(persistedUiStateByThreadKey).filter(([threadKey]) =>
-      parseScopedThreadKey(threadKey),
-    ),
+    Object.entries(persistedUiStateByThreadKey)
+      .filter(([threadKey]) => parseScopedThreadKey(threadKey))
+      .map(([threadKey, state]) => [threadKey, normalizeThreadTerminalUiState(state)]),
   );
 
   return { terminalUiStateByThreadKey };
@@ -172,6 +173,7 @@ function threadTerminalUiStateEqual(
 ): boolean {
   return (
     left.terminalOpen === right.terminalOpen &&
+    left.presentation === right.presentation &&
     left.terminalHeight === right.terminalHeight &&
     left.activeTerminalId === right.activeTerminalId &&
     left.activeTerminalGroupId === right.activeTerminalGroupId &&
@@ -182,6 +184,7 @@ function threadTerminalUiStateEqual(
 
 const DEFAULT_THREAD_TERMINAL_UI_STATE: ThreadTerminalUiState = Object.freeze({
   terminalOpen: false,
+  presentation: "drawer",
   terminalHeight: DEFAULT_THREAD_TERMINAL_HEIGHT,
   terminalIds: [],
   activeTerminalId: "",
@@ -217,6 +220,7 @@ function normalizeThreadTerminalUiState(state: ThreadTerminalUiState): ThreadTer
 
   const normalized: ThreadTerminalUiState = {
     terminalOpen: state.terminalOpen,
+    presentation: state.presentation === "workspace" ? "workspace" : "drawer",
     terminalHeight:
       Number.isFinite(state.terminalHeight) && state.terminalHeight > 0
         ? state.terminalHeight
@@ -443,6 +447,7 @@ function closeThreadTerminal(
 
   return normalizeThreadTerminalUiState({
     terminalOpen: normalized.terminalOpen,
+    presentation: normalized.presentation,
     terminalHeight: normalized.terminalHeight,
     terminalIds: remainingTerminalIds,
     activeTerminalId: nextActiveTerminalId,
@@ -565,6 +570,10 @@ interface TerminalUiStateStoreState {
   /** Closed ids hidden from stale server metadata until that id is explicitly opened again. */
   suppressedTerminalIdsByThreadKey: Record<string, string[]>;
   setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
+  setTerminalPresentation: (
+    threadRef: ScopedThreadRef,
+    presentation: "drawer" | "workspace",
+  ) => void;
   setTerminalHeight: (threadRef: ScopedThreadRef, height: number) => void;
   splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
   splitTerminalVertical: (threadRef: ScopedThreadRef, terminalId: string) => void;
@@ -638,6 +647,10 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
               : undefined,
           );
         },
+        setTerminalPresentation: (threadRef, presentation) =>
+          updateTerminal(threadRef, (state) =>
+            state.presentation === presentation ? state : { ...state, presentation },
+          ),
         setTerminalHeight: (threadRef, height) =>
           updateTerminal(threadRef, (state) => setThreadTerminalHeight(state, height)),
         splitTerminal: (threadRef, terminalId) =>
@@ -770,7 +783,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
     },
     {
       name: TERMINAL_UI_STATE_STORAGE_KEY,
-      version: 4,
+      version: 5,
       storage: createJSONStorage(createTerminalUiStateStorage),
       migrate: migratePersistedTerminalUiStateStoreState,
       partialize: (state) => ({

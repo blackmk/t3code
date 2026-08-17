@@ -52,6 +52,11 @@ successful pick; its hover glow and badge preview the element and color family t
 `rightPanel.toggleMaximized` maximizes or restores the open right panel. It has no default shortcut,
 so add one in **Settings** → **Keybindings** if you want to use it.
 
+`terminal.workspaceToggle` switches the main thread workspace between the chat and a full-size
+terminal. Use the terminal button in the thread header for the same action. Switching back leaves
+the shell session running, so its output and working directory are still there when you return.
+The existing `terminal.toggle` command continues to open or close the resizable terminal drawer.
+
 The command palette searches active thread titles, projects, branches, user messages, and final
 agent responses across connected environments. Message matches show one labeled excerpt while
 keeping the thread's project, branch, and machine context visible. Message search begins after two

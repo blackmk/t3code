@@ -304,6 +304,20 @@ describe("split/new/close terminal shortcuts", () => {
 });
 
 describe("shortcutLabelForCommand", () => {
+  it("returns the configured terminal workspace toggle label", () => {
+    const bindings = compile([
+      {
+        shortcut: modShortcut("j", { shiftKey: true }),
+        command: "terminal.workspaceToggle",
+      },
+    ]);
+
+    assert.strictEqual(
+      shortcutLabelForCommand(bindings, "terminal.workspaceToggle", "Linux"),
+      "Ctrl+Shift+J",
+    );
+  });
+
   it("returns the effective binding label", () => {
     const bindings = compile([
       {
@@ -668,6 +682,22 @@ describe("cross-command precedence", () => {
 });
 
 describe("resolveShortcutCommand", () => {
+  it("resolves a configured terminal workspace toggle", () => {
+    const keybindings = compile([
+      {
+        shortcut: modShortcut("j", { shiftKey: true }),
+        command: "terminal.workspaceToggle",
+      },
+    ]);
+
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "j", ctrlKey: true, shiftKey: true }), keybindings, {
+        platform: "Linux",
+      }),
+      "terminal.workspaceToggle",
+    );
+  });
+
   it("returns dynamic script commands", () => {
     const keybindings = compile([{ shortcut: modShortcut("r"), command: "script.setup.run" }]);
 

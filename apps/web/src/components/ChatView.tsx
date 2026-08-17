@@ -650,6 +650,7 @@ function serverTerminalIdsStrictSubsetOfClient(
 interface PersistentThreadTerminalDrawerProps {
   threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   threadId: ThreadId;
+  mode?: "drawer" | "panel";
   visible: boolean;
   launchContext: PersistentTerminalLaunchContext | null;
   focusRequestId: number;
@@ -664,6 +665,7 @@ interface PersistentThreadTerminalDrawerProps {
 const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDrawer({
   threadRef,
   threadId,
+  mode = "drawer",
   visible,
   launchContext,
   focusRequestId,
@@ -977,8 +979,13 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   }
 
   return (
-    <div className={visible ? undefined : "hidden"}>
+    <div
+      data-workspace-view={mode === "panel" ? "terminal" : undefined}
+      className={cn(mode === "panel" && "flex min-h-0 min-w-0 flex-1", !visible && "hidden")}
+    >
       <ThreadTerminalDrawer
+        mode={mode}
+        focusOwner={mode === "panel" ? "workspace" : "drawer"}
         threadRef={threadRef}
         threadId={threadId}
         cwd={cwd}
@@ -1439,6 +1446,9 @@ function ChatViewContent(props: ChatViewProps) {
     ),
   );
   const storeSetTerminalOpen = useTerminalUiStateStore((s) => s.setTerminalOpen);
+  const storeSetTerminalPresentation = useTerminalUiStateStore(
+    (state) => state.setTerminalPresentation,
+  );
   const storeEnsureTerminal = useTerminalUiStateStore((state) => state.ensureTerminal);
   const storeSplitTerminal = useTerminalUiStateStore((s) => s.splitTerminal);
   const storeSplitTerminalVertical = useTerminalUiStateStore((s) => s.splitTerminalVertical);
@@ -2826,49 +2836,81 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [activeThreadRef, storeSetTerminalOpen],
   );
+  const openTerminalPresentation = useCallback(
+    (presentation: "drawer" | "workspace") => {
+      if (!activeThreadRef) return;
+      if (terminalUiState.terminalIds.length === 0) {
+        if (!activeThreadId || !activeProject) {
+          return;
+        }
+        const cwdForOpen = gitCwd ?? activeProject.workspaceRoot;
+        if (!cwdForOpen) {
+          return;
+        }
+        storeSetTerminalPresentation(activeThreadRef, presentation);
+        if (presentation === "workspace") {
+          setMaximizedRightPanelThreadKey(null);
+        }
+        setTerminalFocusRequestId((value) => value + 1);
+        const terminalId = nextTerminalId(allocatableActiveTerminalIds);
+        storeEnsureTerminal(activeThreadRef, terminalId, { open: true });
+        void openTerminal({
+          environmentId,
+          input: {
+            threadId: activeThreadId,
+            terminalId,
+            cwd: cwdForOpen,
+            ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
+            env: projectScriptRuntimeEnv({
+              project: { cwd: activeProject.workspaceRoot },
+              worktreePath: activeThreadWorktreePath,
+            }),
+          },
+        });
+        return;
+      }
+      storeSetTerminalPresentation(activeThreadRef, presentation);
+      if (presentation === "workspace") {
+        setMaximizedRightPanelThreadKey(null);
+      }
+      setTerminalFocusRequestId((value) => value + 1);
+      setTerminalOpen(true);
+    },
+    [
+      activeProject,
+      activeThreadId,
+      activeThreadRef,
+      activeThreadWorktreePath,
+      allocatableActiveTerminalIds,
+      environmentId,
+      gitCwd,
+      openTerminal,
+      setTerminalOpen,
+      storeEnsureTerminal,
+      storeSetTerminalPresentation,
+      terminalUiState.terminalIds.length,
+    ],
+  );
+  const terminalDrawerOpen =
+    terminalUiState.terminalOpen && terminalUiState.presentation === "drawer";
+  const terminalWorkspaceOpen =
+    terminalUiState.terminalOpen && terminalUiState.presentation === "workspace";
+  const terminalWorkspaceRenderable =
+    terminalWorkspaceOpen && activeProject !== null && activeWorkspaceRoot !== undefined;
   const toggleTerminalVisibility = useCallback(() => {
-    if (!activeThreadRef) return;
-    const nextOpen = !terminalUiState.terminalOpen;
-    if (nextOpen && terminalUiState.terminalIds.length === 0) {
-      if (!activeThreadId || !activeProject) {
-        return;
-      }
-      const cwdForOpen = gitCwd ?? activeProject.workspaceRoot;
-      if (!cwdForOpen) {
-        return;
-      }
-      const terminalId = nextTerminalId(allocatableActiveTerminalIds);
-      storeEnsureTerminal(activeThreadRef, terminalId, { open: true });
-      void openTerminal({
-        environmentId,
-        input: {
-          threadId: activeThreadId,
-          terminalId,
-          cwd: cwdForOpen,
-          ...(activeThreadWorktreePath != null ? { worktreePath: activeThreadWorktreePath } : {}),
-          env: projectScriptRuntimeEnv({
-            project: { cwd: activeProject.workspaceRoot },
-            worktreePath: activeThreadWorktreePath,
-          }),
-        },
-      });
+    if (terminalDrawerOpen) {
+      setTerminalOpen(false);
       return;
     }
-    setTerminalOpen(nextOpen);
-  }, [
-    activeProject,
-    activeThreadId,
-    activeThreadRef,
-    activeThreadWorktreePath,
-    allocatableActiveTerminalIds,
-    environmentId,
-    gitCwd,
-    openTerminal,
-    setTerminalOpen,
-    storeEnsureTerminal,
-    terminalUiState.terminalIds.length,
-    terminalUiState.terminalOpen,
-  ]);
+    openTerminalPresentation("drawer");
+  }, [openTerminalPresentation, setTerminalOpen, terminalDrawerOpen]);
+  const toggleTerminalWorkspace = useCallback(() => {
+    if (terminalWorkspaceOpen) {
+      setTerminalOpen(false);
+      return;
+    }
+    openTerminalPresentation("workspace");
+  }, [openTerminalPresentation, setTerminalOpen, terminalWorkspaceOpen]);
   const splitTerminal = useCallback(
     (direction: "horizontal" | "vertical" = "horizontal") => {
       if (!activeThreadRef || hasReachedSplitLimit || !activeThreadId || !activeProject) {
@@ -4732,6 +4774,13 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "terminal.workspaceToggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleTerminalWorkspace();
+        return;
+      }
+
       if (command === "rightPanel.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -4843,6 +4892,7 @@ function ChatViewContent(props: ChatViewProps) {
     toggleRightPanel,
     toggleRightPanelMaximized,
     toggleTerminalVisibility,
+    toggleTerminalWorkspace,
     composerRef,
   ]);
 
@@ -6049,8 +6099,13 @@ function ChatViewContent(props: ChatViewProps) {
   const panelToggleControls = (
     <PanelLayoutControls
       terminalAvailable={activeProject !== null}
-      terminalOpen={terminalUiState.terminalOpen}
+      terminalOpen={terminalDrawerOpen}
+      terminalWorkspaceOpen={terminalWorkspaceOpen}
       terminalShortcutLabel={shortcutLabelForCommand(keybindings, "terminal.toggle")}
+      terminalWorkspaceShortcutLabel={shortcutLabelForCommand(
+        keybindings,
+        "terminal.workspaceToggle",
+      )}
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={rightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
@@ -6060,6 +6115,7 @@ function ChatViewContent(props: ChatViewProps) {
         rightPanelOpen && activeRightPanelSurface?.kind === "agents" ? 0 : agentPanelModel.liveCount
       }
       onToggleTerminal={toggleTerminalVisibility}
+      onToggleTerminalWorkspace={toggleTerminalWorkspace}
       onToggleRightPanel={toggleRightPanel}
     />
   );
@@ -6265,8 +6321,11 @@ function ChatViewContent(props: ChatViewProps) {
             setThreadErrorBannerDismissTick((tick) => tick + 1);
           }}
         />
-        {/* Main content area with optional plan sidebar */}
-        <div className="flex min-h-0 min-w-0 flex-1">
+        {/* The terminal reuses the same workspace instead of reducing chat to a short drawer. */}
+        <div
+          className={cn("min-h-0 min-w-0 flex-1", terminalWorkspaceRenderable ? "hidden" : "flex")}
+          data-workspace-view="chat"
+        >
           {/* Chat column */}
           <div
             className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -6601,6 +6660,11 @@ function ChatViewContent(props: ChatViewProps) {
         {mountedTerminalThreadRefs.map(({ key: mountedThreadKey, threadRef: mountedThreadRef }) => (
           <PersistentThreadTerminalDrawer
             key={mountedThreadKey}
+            mode={
+              mountedThreadKey === activeThreadKey && terminalWorkspaceRenderable
+                ? "panel"
+                : "drawer"
+            }
             threadRef={mountedThreadRef}
             threadId={mountedThreadRef.threadId}
             visible={mountedThreadKey === activeThreadKey && terminalUiState.terminalOpen}

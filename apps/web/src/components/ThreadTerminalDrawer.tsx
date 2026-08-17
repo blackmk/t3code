@@ -984,6 +984,7 @@ export function TerminalViewport({
 
 interface ThreadTerminalDrawerProps {
   mode?: "drawer" | "panel";
+  focusOwner?: "drawer" | "right-panel" | "workspace";
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
   cwd: string;
@@ -1045,6 +1046,7 @@ function TerminalActionButton({ label, className, onClick, children }: TerminalA
 
 export default function ThreadTerminalDrawer({
   mode = "drawer",
+  focusOwner,
   threadRef,
   threadId,
   cwd,
@@ -1073,6 +1075,7 @@ export default function ThreadTerminalDrawer({
   terminalLaunchLocationsById,
 }: ThreadTerminalDrawerProps) {
   const isPanel = mode === "panel";
+  const terminalFocusOwner = focusOwner ?? (isPanel ? "right-panel" : "drawer");
   const [advancedTypography] = useLocalStorage(
     TYPOGRAPHY_ADVANCED_STORAGE_KEY,
     false,
@@ -1379,7 +1382,7 @@ export default function ThreadTerminalDrawer({
   if (normalizedTerminalIds.length === 0) {
     return (
       <aside
-        data-terminal-owner={isPanel ? "right-panel" : "drawer"}
+        data-terminal-owner={terminalFocusOwner}
         className={cn(
           "thread-terminal-drawer relative flex min-w-0 flex-col overflow-hidden bg-background",
           isPanel ? "h-full flex-1" : "shrink-0 border-t border-border/80",
@@ -1409,7 +1412,7 @@ export default function ThreadTerminalDrawer({
 
   return (
     <aside
-      data-terminal-owner={isPanel ? "right-panel" : "drawer"}
+      data-terminal-owner={terminalFocusOwner}
       className={cn(
         "thread-terminal-drawer relative flex min-w-0 flex-col overflow-hidden bg-background",
         isPanel ? "h-full flex-1" : "shrink-0 border-t border-border/80",

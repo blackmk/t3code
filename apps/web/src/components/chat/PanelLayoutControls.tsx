@@ -1,4 +1,11 @@
-import { Maximize2Icon, Minimize2Icon, PanelBottomIcon, PanelRightIcon } from "lucide-react";
+import {
+  Maximize2Icon,
+  MessageSquareIcon,
+  Minimize2Icon,
+  PanelBottomIcon,
+  PanelRightIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { memo } from "react";
 
 import { Toggle } from "../ui/toggle";
@@ -8,13 +15,16 @@ interface PanelLayoutControlsProps {
   showTerminalControl?: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
+  terminalWorkspaceOpen: boolean;
   terminalShortcutLabel: string | null;
+  terminalWorkspaceShortcutLabel: string | null;
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
   /** Running + waiting subagents in this thread; badges the right panel toggle. */
   liveAgentCount: number;
   onToggleTerminal: () => void;
+  onToggleTerminalWorkspace: () => void;
   onToggleRightPanel: () => void;
 }
 
@@ -22,14 +32,21 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   showTerminalControl = true,
   terminalAvailable,
   terminalOpen,
+  terminalWorkspaceOpen,
   terminalShortcutLabel,
+  terminalWorkspaceShortcutLabel,
   rightPanelAvailable,
   rightPanelOpen,
   rightPanelShortcutLabel,
   liveAgentCount,
   onToggleTerminal,
+  onToggleTerminalWorkspace,
   onToggleRightPanel,
 }: PanelLayoutControlsProps) {
+  const terminalWorkspaceToggleLabel = terminalWorkspaceOpen
+    ? "Switch to chat view"
+    : "Switch to terminal view";
+
   return (
     <div
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
@@ -56,6 +73,36 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
             {terminalAvailable
               ? `Toggle terminal drawer${terminalShortcutLabel ? ` (${terminalShortcutLabel})` : ""}`
               : "Terminal drawer is unavailable"}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showTerminalControl ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className="shrink-0 [-webkit-app-region:no-drag]"
+                pressed={terminalWorkspaceOpen}
+                onPressedChange={onToggleTerminalWorkspace}
+                aria-label={terminalWorkspaceToggleLabel}
+                variant="ghost"
+                size="sm"
+                disabled={!terminalAvailable && !terminalWorkspaceOpen}
+              >
+                {terminalWorkspaceOpen ? (
+                  <MessageSquareIcon className="size-4" />
+                ) : (
+                  <TerminalIcon className="size-4" />
+                )}
+              </Toggle>
+            }
+          />
+          <TooltipPopup side="bottom">
+            {terminalAvailable || terminalWorkspaceOpen
+              ? `${terminalWorkspaceToggleLabel}${
+                  terminalWorkspaceShortcutLabel ? ` (${terminalWorkspaceShortcutLabel})` : ""
+                }`
+              : "Terminal view is unavailable"}
           </TooltipPopup>
         </Tooltip>
       ) : null}

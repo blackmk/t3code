@@ -78,4 +78,17 @@ describe("isTerminalFocused", () => {
     expect(getTerminalFocusOwner()).toBe("right-panel");
     expect(isTerminalFocused()).toBe(true);
   });
+
+  it("returns the workspace owner for focus inside the terminal workspace", () => {
+    const workspaceTerminal = new MockHTMLElement();
+    workspaceTerminal.isConnected = true;
+    workspaceTerminal.terminalOwner = "workspace";
+    workspaceTerminal.dataset.terminalOwner = "workspace";
+
+    globalThis.HTMLElement = MockHTMLElement as unknown as typeof HTMLElement;
+    globalThis.document = { activeElement: workspaceTerminal } as unknown as Document;
+
+    expect(getTerminalFocusOwner()).toBe("workspace");
+    expect(isTerminalFocused()).toBe(true);
+  });
 });
