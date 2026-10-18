@@ -8,7 +8,9 @@ import type {
   AcpRegistryListProvidersResult,
   AcpRegistryOperationError,
   AcpRegistrySetProviderInput,
+  CodexSettings,
   ProviderDriverKind,
+  ProviderSetupError,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
   ServerProvider,
@@ -57,6 +59,12 @@ export interface ProviderInstance {
     ProviderDriverError
   >;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
+  /** Native terminals use the same managed executable and scoped sign-in as Chat. */
+  readonly nativeCodexRuntime?: Effect.Effect<
+    { readonly config: CodexSettings; readonly environment: NodeJS.ProcessEnv },
+    ProviderSetupError,
+    Scope.Scope
+  >;
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {

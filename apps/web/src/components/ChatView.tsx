@@ -57,6 +57,7 @@ import {
   AuthPreviewOperateScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
+  AGENT_TERMINAL_ID,
   type AssistantCitation,
   type ChatFileAttachment,
   CommandId,
@@ -163,6 +164,9 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { isElectron } from "../env";
+import { AgentTerminalView } from "./AgentTerminalView";
+import { useAgentTerminalView } from "../hooks/useAgentTerminalView";
+import { requestAgentTerminalToggle } from "../state/agentTerminalView";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
@@ -1052,6 +1056,9 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [routeThreadKey]);
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
+  const launchNativeThread = useOrchestrationCommand(threadEnvironment.launch, {
+    reportFailure: false,
+  });
   const deleteThread = useOrchestrationCommand(threadEnvironment.delete, { reportFailure: false });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -1534,7 +1541,9 @@ export default function ChatView(props: ChatViewProps) {
       return [];
     }
     return activeThreadKnownSessionsRaw.filter(
-      (session) => session.target.threadId === activeThreadId,
+      (session) =>
+        session.target.threadId === activeThreadId &&
+        session.target.terminalId !== AGENT_TERMINAL_ID,
     );
   })();
   const activeServerOrderedTerminalIds = activeThreadKnownSessions.map(
@@ -5511,6 +5520,7 @@ export default function ChatView(props: ChatViewProps) {
         openThreadFindStable();
       },
       "rightPanel.toggle": () => toggleRightPanelStable(),
+      "chat.toggleTerminalView": () => requestAgentTerminalToggle(),
       "rightPanel.toggleMaximized": ({ event }) => {
         if (!event.repeat) toggleRightPanelMaximizedStable();
       },
@@ -7649,6 +7659,110 @@ export default function ChatView(props: ChatViewProps) {
       composerRef.current?.addDroppedFolders(folders),
   );
 
+  const prepareNativeThread = async () => {
+    if (!activeThread || !activeProject)
+      throw new Error("Choose a project before opening Terminal view.");
+    const context = composerRef.current?.getSendContext();
+    const driver = providerStatuses.find(
+      (provider) => provider.instanceId === context?.selectedModelSelection.instanceId,
+    )?.driver;
+    if (!context?.providerAvailable || (driver !== "codex" && driver !== "claudeAgent"))
+      throw new Error("Terminal view supports Codex and Claude Code.");
+    if (context.multipleModelSelections !== null)
+      throw new Error("Choose one model before opening Terminal view.");
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    if (
+      !isServerThread ||
+      (activeMessageCount === 0 && envMode === "worktree" && !activeThread.worktreePath)
+    ) {
+      if (envMode === "worktree" && !activeThreadBranch)
+        throw new Error("Choose a base branch before opening Terminal view.");
+      const result = await launchNativeThread({
+        environmentId: activeThread.environmentId,
+        input: {
+          commandId: CommandId.make(randomUUID()),
+          threadId: activeThread.id,
+          reuseExistingThread: isServerThread,
+          projectId: activeProject.id,
+          title: activeThread.title || "New thread",
+          modelSelection: context.selectedModelSelection,
+          runtimeMode,
+          interactionMode: context.interactionMode,
+          workspaceStrategy: activeThread.worktreePath
+            ? {
+                type: "existing_worktree",
+                worktreePath: activeThread.worktreePath,
+                ...(activeThreadBranch ? { branch: activeThreadBranch } : {}),
+              }
+            : envMode === "worktree"
+              ? { type: "worktree", baseRef: activeThreadBranch!, startFromOrigin }
+              : { type: "root", ...(activeThreadBranch ? { branch: activeThreadBranch } : {}) },
+        },
+      });
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      if (!isServerThread) {
+        markPromotedDraftThreadByRef(threadRef);
+        void navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+        });
+      }
+    } else {
+      const modelResult = await updateThreadMetadata({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThread.id, modelSelection: context.selectedModelSelection },
+      });
+      if (modelResult._tag === "Failure") throw squashAtomCommandFailure(modelResult);
+      const settingsResult = await persistThreadSettingsForNextTurn({
+        threadId: activeThread.id,
+        createdAt: new Date().toISOString(),
+        runtimeMode,
+        interactionMode: context.interactionMode,
+      });
+      if (settingsResult._tag === "Failure") throw squashAtomCommandFailure(settingsResult);
+    }
+  };
+  const agentTerminalAvailable =
+    isElectron &&
+    activeProject !== null &&
+    serverConfig?.environment.capabilities.nativeAgentTerminal === true;
+  const prepareNativeThreadStable = useStableCallback(prepareNativeThread);
+  const agentTerminal = useAgentTerminalView({
+    threadRef: activeThreadRef,
+    available: agentTerminalAvailable,
+    prepare: prepareNativeThreadStable,
+  });
+  const agentTerminalControls = agentTerminalAvailable ? (
+    <div
+      className="[-webkit-app-region:no-drag] flex shrink-0 gap-1 rounded-md border p-0.5"
+      aria-label="Conversation view"
+    >
+      <Button
+        variant={agentTerminal.terminal ? "ghost" : "secondary"}
+        size="sm"
+        aria-pressed={!agentTerminal.terminal}
+        disabled={agentTerminal.pending || (agentTerminal.terminal && isWorking)}
+        onClick={() => {
+          if (agentTerminal.terminal) void agentTerminal.toggle();
+        }}
+      >
+        Chat
+      </Button>
+      <Button
+        variant={agentTerminal.terminal ? "secondary" : "ghost"}
+        size="sm"
+        aria-pressed={agentTerminal.terminal}
+        disabled={agentTerminal.pending || (!agentTerminal.terminal && isWorking)}
+        title={shortcutLabelForCommand(keybindings, "chat.toggleTerminalView") ?? undefined}
+        onClick={() => {
+          if (!agentTerminal.terminal) void agentTerminal.toggle();
+        }}
+      >
+        Terminal
+      </Button>
+    </div>
+  ) : null;
+
   if (!activeThread) {
     return <NoActiveThreadState />;
   }
@@ -7827,11 +7941,27 @@ export default function ChatView(props: ChatViewProps) {
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
               : {})}
-          />
+          >
+            {agentTerminalControls}
+          </ChatHeader>
         </header>
 
         <div className="relative flex min-h-0 min-w-0 flex-1">
+          {/* Chat stays mounted under the terminal so switching back keeps its scroll position. */}
+          {agentTerminal.terminal && activeThreadRef ? (
+            <div className="absolute inset-0 z-50 flex bg-background">
+              <AgentTerminalView
+                key={activeThreadKey}
+                threadRef={activeThreadRef}
+                cwd={gitCwd ?? activeProject?.workspaceRoot ?? "."}
+                keybindings={keybindings}
+                busy={isWorking}
+                onOpenFailed={agentTerminal.openFailed}
+              />
+            </div>
+          ) : null}
           <ThreadFindCanvas
+            inert={agentTerminal.terminal}
             findOptions={{
               skills: timelineSkills,
               progressive: serverConfig?.threadFindProgressive === true,

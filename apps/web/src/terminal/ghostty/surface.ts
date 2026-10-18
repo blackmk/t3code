@@ -503,6 +503,7 @@ export interface GhosttyTerminalSurfaceOptions {
   readonly onResize: (cols: number, rows: number) => void;
   readonly onSelectionChange: () => void;
   readonly beforeKey: (event: KeyboardEvent) => boolean;
+  readonly onEmptyClipboardPaste?: () => void;
   readonly onLinkActivate: (text: string, event: MouseEvent) => void;
   readonly canActivateLink?: (text: string) => boolean;
   /**
@@ -910,7 +911,10 @@ export class GhosttyTerminalSurface {
     const text = await readText();
     if (this.disposed || this.pasteShortcutToken !== token || !isCurrent()) return;
     this.pasteShortcutToken += 1;
-    if (text.length === 0) return;
+    if (text.length === 0) {
+      this.options.onEmptyClipboardPaste?.();
+      return;
+    }
     const encoded = this.core.encodePaste(text);
     if (encoded.length > 0) this.options.onData(encoded);
   }

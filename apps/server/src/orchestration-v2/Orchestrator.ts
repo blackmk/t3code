@@ -124,6 +124,7 @@ import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
+import * as NativeTerminalRegistry from "../terminal/NativeTerminalRegistry.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
@@ -267,7 +268,17 @@ export function canReplayCommandReceipt(
   return receiptThreadId === commandThreadId;
 }
 
+export class OrchestratorNativeTerminalOwnedError extends Schema.TaggedError<OrchestratorNativeTerminalOwnedError>()(
+  "OrchestratorNativeTerminalOwnedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return "Switch this conversation to Chat before sending messages, answering approvals, or changing execution settings.";
+  }
+}
+
 export const OrchestratorV2Error = Schema.Union([
+  OrchestratorNativeTerminalOwnedError,
   OrchestratorDispatchError,
   OrchestratorCommandRejectedError,
   OrchestratorProjectionError,
@@ -818,6 +829,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  const nativeTerminals = yield* Effect.serviceOption(
+    NativeTerminalRegistry.NativeTerminalRegistry,
+  );
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const runtimePolicy = yield* RuntimePolicyV2;
@@ -10991,6 +11005,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .getThreadShell(threadId)
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
+    }
+
+    if (
+      Option.isSome(nativeTerminals) &&
+      nativeTerminals.value.owns(commandThreadId(command)) &&
+      [
+        "message.dispatch",
+        "queue.resume",
+        "prepared-run.retry",
+        "checkpoint.rollback",
+        "provider.switch",
+        "thread.fork",
+        "runtime-request.respond",
+        "queued-message.promote-to-steer",
+        "thread.runtime-mode.set",
+        "thread.interaction-mode.set",
+        "thread.model-selection.set",
+      ].includes(command.type) &&
+      !nativeTerminals.value.admits(commandThreadId(command), command.commandId)
+    ) {
+      return yield* new OrchestratorNativeTerminalOwnedError({
+        commandId: command.commandId,
+        threadId: commandThreadId(command),
+      });
     }
 
     const plan = yield* dispatchOnce(command).pipe(

@@ -62,6 +62,7 @@ import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { isTerminalUrl } from "../terminal-links";
 import {
   isDiffToggleShortcut,
+  matchesCommandShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
@@ -383,6 +384,11 @@ export function shouldHandleTerminalExit(
 }
 
 interface TerminalViewportProps {
+  nativeAgent?: boolean;
+  /** Holds the session attach until the owner has opened it at the measured grid. */
+  attachReady?: boolean;
+  /** Every settled grid size, including the first fit after mount. */
+  onGridResize?: (cols: number, rows: number) => void;
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
@@ -423,6 +429,9 @@ export function TerminalViewport(props: TerminalViewportProps) {
 }
 
 function TerminalSessionViewport({
+  nativeAgent = false,
+  attachReady = true,
+  onGridResize,
   advancedTypography,
   threadRef,
   threadId,
@@ -498,14 +507,19 @@ function TerminalSessionViewport({
   const terminalFontRef = useRef({ family: terminalFontFamily, size: terminalFontSize });
   const terminalSession = useAttachedTerminalSession({
     environmentId,
-    terminal: {
-      threadId,
-      terminalId,
-      cwd,
-      ...(worktreePath !== undefined ? { worktreePath } : {}),
-      ...(runtimeEnv ? { env: runtimeEnv } : {}),
-      ...(providerInstanceId ? { providerInstanceId } : {}),
-    },
+    terminal: attachReady
+      ? {
+          threadId,
+          terminalId,
+          cwd,
+          ...(worktreePath !== undefined ? { worktreePath } : {}),
+          ...(runtimeEnv ? { env: runtimeEnv } : {}),
+          ...(providerInstanceId ? { providerInstanceId } : {}),
+        }
+      : null,
+  });
+  const handleGridResize = useEffectEvent((cols: number, rows: number) => {
+    onGridResize?.(cols, rows);
   });
   const canResizeTerminal =
     canOperateTerminal && terminalSession.version > 0 && terminalSession.status === "running";
@@ -613,7 +627,12 @@ function TerminalSessionViewport({
         theme: terminalThemeFromApp(mount),
         font: terminalFontOptions(setupFont.family, setupFont.size),
         onData: (data) => handleData(data),
-        onResize: (cols, rows) => void resizeTerminal(cols, rows),
+        ...(nativeAgent ? { onEmptyClipboardPaste: () => handleData("\u0016") } : {}),
+        onResize: (cols, rows) => {
+          // Disposal flushes a pending resize; the owner is already gone then.
+          if (!cancelled) handleGridResize(cols, rows);
+          void resizeTerminal(cols, rows);
+        },
         onSelectionChange: () => handleSelectionChange(),
         beforeKey: (event) => handleBeforeKey(event),
         onLinkActivate: (text, event) => handleLinkActivate(text, event),
@@ -869,6 +888,11 @@ function TerminalSessionViewport({
       function handleBeforeKey(event: KeyboardEvent): boolean {
         const currentKeybindings = readKeybindings();
         const options = { context: { terminalFocus: true, terminalOpen: true } };
+        if (nativeAgent) {
+          return !matchesCommandShortcut(event, currentKeybindings, "chat.toggleTerminalView", {
+            context: { ...options.context, isDesktop: true },
+          });
+        }
         if (preventTerminalCloseShortcut(event, currentKeybindings)) {
           return false;
         }
@@ -926,17 +950,19 @@ function TerminalSessionViewport({
             fallbackToBrowser();
             return;
           }
-          void openLinkInPreview(text, event.metaKey || event.ctrlKey, fallbackToBrowser).catch(
-            (error: unknown) => {
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Unable to open link",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            },
-          );
+          void openLinkInPreview(
+            text,
+            nativeAgent || event.metaKey || event.ctrlKey,
+            fallbackToBrowser,
+          ).catch((error: unknown) => {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Unable to open link",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          });
           return;
         }
         const target = resolvePathLinkTarget(text, cwd);
@@ -1048,7 +1074,7 @@ function TerminalSessionViewport({
         mount.focus({ preventScroll: true });
       }
     };
-  }, [cwd, environmentId, terminalId]);
+  }, [cwd, environmentId, nativeAgent, terminalId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

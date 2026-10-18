@@ -141,7 +141,7 @@ function findEffectiveShortcutForCommand(
   return effectiveShortcutsForCommand(keybindings, command, options)[0] ?? null;
 }
 
-function matchesCommandShortcut(
+export function matchesCommandShortcut(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
   command: KeybindingCommand,

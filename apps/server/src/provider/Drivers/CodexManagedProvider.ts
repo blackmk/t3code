@@ -279,6 +279,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     enabled,
     snapshot,
     orchestrationAdapter,
+    nativeCodexRuntime: resolveRuntime,
     textGeneration,
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>

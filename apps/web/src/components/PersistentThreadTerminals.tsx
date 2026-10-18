@@ -1,4 +1,5 @@
 import {
+  AGENT_TERMINAL_ID,
   AuthTerminalOperateScope,
   type EnvironmentId,
   type ResolvedKeybindingsConfig,
@@ -128,8 +129,11 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     panelSurfaces.flatMap((surface) => (surface.kind === "terminal" ? surface.terminalIds : [])),
   );
   const drawerTerminalSessions =
-    knownTerminalSessions?.filter((session) => !panelTerminalIds.has(session.target.terminalId)) ??
-    [];
+    knownTerminalSessions?.filter(
+      (session) =>
+        session.target.terminalId !== AGENT_TERMINAL_ID &&
+        !panelTerminalIds.has(session.target.terminalId),
+    ) ?? [];
   const terminalLabelsById = new Map<string, string>();
   for (const session of drawerTerminalSessions) {
     terminalLabelsById.set(

@@ -5,6 +5,7 @@ import {
   type GhosttyColor,
   type GhosttySnapshot,
 } from "./core";
+import { deviceSnap, drawCellGlyph, isCellGlyph } from "./cellGlyphs";
 
 export interface GhosttyCellMetrics {
   readonly width: number;
@@ -145,13 +146,20 @@ export function renderGhosttySnapshot(options: {
   }
 
   context.textBaseline = "alphabetic";
+  const snap = deviceSnap(context);
   for (const rowIndex of rowsToDraw) {
     const row = snapshot.rowData[rowIndex];
     if (!row) continue;
     const top = originY + rowIndex * metrics.height;
 
     context.fillStyle = cssColor(snapshot.background);
-    context.fillRect(padding, top, snapshot.cols * metrics.width, metrics.height);
+    const clearTop = snap(top);
+    context.fillRect(
+      padding,
+      clearTop,
+      snapshot.cols * metrics.width,
+      snap(top + metrics.height) - clearTop,
+    );
 
     let backgroundStart = 0;
     while (backgroundStart < row.cells.length) {
@@ -192,7 +200,26 @@ export function renderGhosttySnapshot(options: {
         runStart += 1;
         continue;
       }
-      const runEnd = ghosttyTextRunEnd(row.cells, runStart, (cell) => sameTextStyle(cell, first));
+      if (isCellGlyph(first.text)) {
+        if (!first.invisible) {
+          context.fillStyle = cssColor(first.foreground);
+          drawCellGlyph(
+            context,
+            first.text,
+            padding + runStart * metrics.width,
+            top,
+            metrics.width,
+            metrics.height,
+          );
+        }
+        runStart += 1;
+        continue;
+      }
+      const runEnd = ghosttyTextRunEnd(
+        row.cells,
+        runStart,
+        (cell) => sameTextStyle(cell, first) && !isCellGlyph(cell.text),
+      );
       const text = row.cells
         .slice(runStart, runEnd)
         .map((cell) => cell.text)
@@ -263,7 +290,9 @@ export function renderGhosttySnapshot(options: {
       if (cell?.text) {
         context.font = fontForCell(cell, fontSize, fontFamily);
         context.fillStyle = cssColor(snapshot.background);
-        context.fillText(cell.text, left, top + metrics.baseline, metrics.width);
+        if (!drawCellGlyph(context, cell.text, left, top, metrics.width, metrics.height)) {
+          context.fillText(cell.text, left, top + metrics.baseline, metrics.width);
+        }
       }
     }
   }

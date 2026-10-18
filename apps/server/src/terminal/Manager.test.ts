@@ -476,6 +476,35 @@ it.layer(
     }),
   );
 
+  it.effect(
+    "runs a native CLI directly, preserves it on attach, and keeps it out of idle shell cleanup",
+    () =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager(5000, {
+          env: { NO_COLOR: "1", TERM: "dumb" },
+        });
+        const input = {
+          ...openInput(),
+          terminalId: "agent",
+          process: { command: "native-cli", args: ["--resume", "conversation-1"] },
+        };
+        yield* manager.open(input);
+        yield* manager.open(input);
+        const unsubscribe = yield* manager.attachStream(
+          { threadId: input.threadId, terminalId: input.terminalId },
+          () => Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        assert.equal(ptyAdapter.spawnInputs.length, 1);
+        assert.equal(ptyAdapter.spawnInputs[0]?.shell, "native-cli");
+        assert.deepEqual(ptyAdapter.spawnInputs[0]?.args, ["--resume", "conversation-1"]);
+        assert.isUndefined(ptyAdapter.spawnInputs[0]?.env.NO_COLOR);
+        assert.equal(ptyAdapter.spawnInputs[0]?.env.TERM, "xterm-256color");
+        yield* manager.closeIdle({ threadId: input.threadId });
+        assert.isFalse(ptyAdapter.processes[0]!.killed);
+      }),
+  );
+
   it.effect("keeps attach streams live when a terminal id is closed and reopened", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
