@@ -107,6 +107,17 @@ it.effect(
         assert.equal(blocked._tag, "Failure");
         if (blocked._tag === "Failure")
           assert.equal(blocked.failure._tag, "OrchestratorNativeTerminalOwnedError");
+        // Chat's subagent Stop has no native path, so it is refused up front.
+        const stopSubagents = yield* engine
+          .dispatch({
+            type: "subagent.stop",
+            commandId: CommandId.make("native-subagent-stop"),
+            threadId,
+          })
+          .pipe(Effect.result);
+        assert.equal(stopSubagents._tag, "Failure");
+        if (stopSubagents._tag === "Failure")
+          assert.equal(stopSubagents.failure._tag, "OrchestratorNativeTerminalOwnedError");
         const accepted = yield* registry.withInputCommand(
           threadId,
           command.commandId,

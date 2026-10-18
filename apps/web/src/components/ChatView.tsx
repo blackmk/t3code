@@ -7727,6 +7727,10 @@ export default function ChatView(props: ChatViewProps) {
     activeProject !== null &&
     serverConfig?.environment.capabilities.nativeAgentTerminal === true;
   const prepareNativeThreadStable = useStableCallback(prepareNativeThread);
+  // While Terminal covers the chat, window-level typing, paste and composer
+  // shortcuts reach the composer only through composerRef; detaching it makes
+  // them no-ops instead of editing an invisible draft.
+  const coveredComposerRef = useRef<ChatComposerHandle | null>(null);
   const agentTerminal = useAgentTerminalView({
     threadRef: activeThreadRef,
     available: agentTerminalAvailable,
@@ -8242,7 +8246,9 @@ export default function ChatView(props: ChatViewProps) {
                                 true
                               }
                               onMultipleModelSelectionsChange={setMultipleModelSelectionsStable}
-                              composerRef={composerRef}
+                              composerRef={
+                                agentTerminal.terminal ? coveredComposerRef : composerRef
+                              }
                               composerDraftTarget={composerDraftTarget}
                               environmentId={environmentId}
                               attachmentUploadsCapabilityKnown={attachmentUploadsCapabilityKnown}

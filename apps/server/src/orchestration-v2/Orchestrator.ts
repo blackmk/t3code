@@ -11010,7 +11010,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       Option.isSome(nativeTerminals) &&
       nativeTerminals.value.owns(commandThreadId(command)) &&
-      [
+      ([
         "message.dispatch",
         "queue.resume",
         "prepared-run.retry",
@@ -11022,7 +11022,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         "thread.runtime-mode.set",
         "thread.interaction-mode.set",
         "thread.model-selection.set",
-      ].includes(command.type) &&
+        // The native runtime cannot stop one subagent; Stop belongs in Terminal.
+        "subagent.stop",
+      ].includes(command.type) ||
+        // A pull request wake would start a turn the CLI never asked for. Refused,
+        // the watch update is not recorded, so the watch delivers it after Chat returns.
+        (command.type === "thread.pull-request-watch.sync" && command.wake !== undefined)) &&
       !nativeTerminals.value.admits(commandThreadId(command), command.commandId)
     ) {
       return yield* new OrchestratorNativeTerminalOwnedError({

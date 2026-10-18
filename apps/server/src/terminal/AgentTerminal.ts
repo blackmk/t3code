@@ -19,6 +19,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -55,6 +56,7 @@ import {
   codexRuntimeModeTurnDefaults,
 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { makeNativeClaude } from "./NativeClaude.ts";
+import { resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
 import {
   resolveCodexHomeLayout,
   materializeCodexShadowHome,
@@ -415,8 +417,13 @@ export const layer = Layer.effect(
             );
           yield* Deferred.succeed(ready, turnInput);
         });
-      yield* registry.register(threadId, sessionId, (sessionInput) =>
+      const openNative: Parameters<typeof registry.register>[2] = (sessionInput) =>
         Effect.gen(function* () {
+          // The CLI's hooks and bridge live in this session's scope, so a
+          // session closed for any reason must not leave the CLI running.
+          yield* Effect.addFinalizer(() =>
+            manager.close({ threadId, terminalId: AGENT_TERMINAL_ID }).pipe(Effect.ignore),
+          );
           const mcp = yield* mcpSessions.read(threadId);
           const env = withAgentDeviceEnvironment({ ...hostEnvironment, ...baseEnv }, mcp);
           if (driver === "codex") {
@@ -439,7 +446,9 @@ export const layer = Layer.effect(
               ...(effective?.environment ?? env),
               ...(homeLayout.effectiveHomePath ? { CODEX_HOME: homeLayout.effectiveHomePath } : {}),
             };
-            const args = tokenizeCliArgs(codexSettings.launchArgs);
+            const args = tokenizeCliArgs(
+              resolveCodexLaunchArgs(codexSettings.launchArgs, effective?.environment ?? env),
+            );
             const runtimeDefaults = codexRuntimeModeTurnDefaults(policy.runtimeMode);
             const sandbox =
               runtimeDefaults.sandboxPolicy.type === "dangerFullAccess"
@@ -612,9 +621,9 @@ export const layer = Layer.effect(
             (cause) =>
               new ProviderAdapterOpenSessionError({ driver, providerSessionId: sessionId, cause }),
           ),
-        ),
-      );
-      const launched = yield* Effect.gen(function* () {
+        );
+      return yield* Effect.gen(function* () {
+        yield* registry.register(threadId, sessionId, openNative);
         if (previous?.providerSessionId)
           yield* providerSessions.detach({
             providerSessionId: previous.providerSessionId,
@@ -656,14 +665,18 @@ export const layer = Layer.effect(
           env: launchEnv,
           process: launchProcess,
         });
-      }).pipe(Effect.result);
-      if (launched._tag === "Failure") {
-        entries.delete(threadId);
-        yield* registry.unregister(threadId);
-        yield* providerSessions.close(sessionId).pipe(Effect.ignore);
-        return yield* Effect.fail(launched.failure);
-      }
-      return launched.success;
+      }).pipe(
+        // Interruption too: a dropped RPC must not leave the thread owned.
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit)
+            ? Effect.void
+            : Effect.gen(function* () {
+                entries.delete(threadId);
+                yield* registry.unregister(threadId);
+                yield* providerSessions.close(sessionId).pipe(Effect.ignore);
+              }),
+        ),
+      );
     });
     const close = Effect.fn("terminal.agent.close")(function* (input: TerminalCloseInput) {
       const threadId = ThreadId.make(input.threadId);

@@ -14,6 +14,10 @@ import {
   makeCodexAppServerSpawnCommand,
 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
+import {
+  buildCodexInitializeParams,
+  codexAppServerEnvironment,
+} from "../provider/CodexProvider.ts";
 import { makeProviderTextDeltaCoalescer } from "../orchestration-v2/Adapters/ProviderTextDeltaCoalescer.ts";
 import {
   ProviderAdapterProtocolError,
@@ -89,7 +93,7 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
     command: options.command,
     args: [...options.args, "app-server", "--listen", "ws://127.0.0.1:0"],
     cwd: options.cwd,
-    env: options.env,
+    env: codexAppServerEnvironment(options.env),
   });
   const handle = yield* spawner.spawn(command).pipe(Effect.mapError(error));
   yield* handle.stderr.pipe(
@@ -287,10 +291,7 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
     ),
     Effect.forkScoped,
   );
-  const initialization = yield* request("initialize", {
-    clientInfo: { name: "t3-native-terminal", version: "1.0.0" },
-    capabilities: { experimentalApi: true },
-  });
+  const initialization = yield* request("initialize", buildCodexInitializeParams());
   yield* send({ method: "initialized" });
   const thread = yield* request(options.resumeId ? "thread/resume" : "thread/start", {
     ...options.threadParams,
