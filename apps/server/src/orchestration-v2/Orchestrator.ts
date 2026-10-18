@@ -96,6 +96,7 @@ import {
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProviderContinuationRequests } from "./ProviderContinuationRequests.ts";
+import * as NativeTerminalRegistry from "../terminal/NativeTerminalRegistry.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
@@ -221,7 +222,17 @@ export function canReplayCommandReceipt(
   return receiptThreadId === commandThreadId;
 }
 
+export class OrchestratorNativeTerminalOwnedError extends Schema.TaggedError<OrchestratorNativeTerminalOwnedError>()(
+  "OrchestratorNativeTerminalOwnedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return "Switch this conversation to Chat before sending messages, answering approvals, or changing execution settings.";
+  }
+}
+
 export const OrchestratorV2Error = Schema.Union([
+  OrchestratorNativeTerminalOwnedError,
   OrchestratorDispatchError,
   OrchestratorCommandRejectedError,
   OrchestratorProjectionError,
@@ -706,6 +717,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
+  const nativeTerminals = yield* Effect.serviceOption(
+    NativeTerminalRegistry.NativeTerminalRegistry,
+  );
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
@@ -9349,6 +9363,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         sequence: receipt.resultSequence,
         storedEvents,
       } satisfies OrchestratorV2DispatchResult;
+    }
+
+    if (
+      Option.isSome(nativeTerminals) &&
+      nativeTerminals.value.owns(commandThreadId(command)) &&
+      [
+        "message.dispatch",
+        "queue.resume",
+        "checkpoint.rollback",
+        "provider.switch",
+        "thread.fork",
+        "runtime-request.respond",
+        "queued-message.promote-to-steer",
+        "thread.runtime-mode.set",
+        "thread.interaction-mode.set",
+        "thread.model-selection.set",
+      ].includes(command.type) &&
+      !nativeTerminals.value.admits(commandThreadId(command), command.commandId)
+    ) {
+      return yield* new OrchestratorNativeTerminalOwnedError({
+        commandId: command.commandId,
+        threadId: commandThreadId(command),
+      });
     }
 
     const plan = yield* dispatchOnce(command).pipe(

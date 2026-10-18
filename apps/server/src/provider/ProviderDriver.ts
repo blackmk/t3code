@@ -38,6 +38,7 @@ import type * as Scope from "effect/Scope";
 
 import type { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { CodexEffectiveRuntime } from "./CodexManagedRuntime.ts";
 import type { ProviderDriverError } from "./Errors.ts";
 import type { ProviderAuthController } from "./Services/ProviderAuthService.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
@@ -90,6 +91,12 @@ export interface ProviderInstance {
     ProviderDriverError
   >;
   readonly orchestrationAdapter: ProviderAdapterV2Shape;
+  /** Native terminals use the same managed executable and scoped sign-in as Chat. */
+  readonly nativeCodexRuntime?: Effect.Effect<
+    CodexEffectiveRuntime,
+    import("@t3tools/contracts").ProviderSetupError,
+    Scope.Scope
+  >;
   readonly textGeneration: TextGeneration["Service"];
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {

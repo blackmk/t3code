@@ -147,6 +147,12 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
 /**
  * TerminalManager - Service tag for terminal session orchestration.
  */
+export interface TerminalProcess {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}
+type TerminalLaunch<Input> = Input & { readonly process?: TerminalProcess };
+
 export class TerminalManager extends Context.Service<
   TerminalManager,
   {
@@ -157,7 +163,7 @@ export class TerminalManager extends Context.Service<
      * persisted history on first open.
      */
     readonly open: (
-      input: TerminalOpenInput,
+      input: TerminalLaunch<TerminalOpenInput>,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
     /**
@@ -166,7 +172,7 @@ export class TerminalManager extends Context.Service<
      * Returns an unsubscribe function.
      */
     readonly attachStream: (
-      input: TerminalAttachInput,
+      input: TerminalLaunch<TerminalAttachInput>,
       listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
     ) => Effect.Effect<() => void, TerminalError>;
 
@@ -191,7 +197,7 @@ export class TerminalManager extends Context.Service<
      * Always resets history before spawning the new process.
      */
     readonly restart: (
-      input: TerminalRestartInput,
+      input: TerminalLaunch<TerminalRestartInput>,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
     /**
@@ -268,7 +274,7 @@ export interface ShellCandidate {
   args?: string[];
 }
 
-export interface TerminalStartInput extends TerminalOpenInput {
+export interface TerminalStartInput extends TerminalLaunch<TerminalOpenInput> {
   cols: number;
   rows: number;
 }
@@ -300,6 +306,7 @@ interface TerminalSessionState {
   /** Normalized child command name when `hasRunningSubprocess`; cleared when idle. */
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
+  launchProcess: TerminalProcess | null;
 }
 
 interface PersistHistoryRequest {
@@ -2255,8 +2262,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
+            const shellCandidates = session.launchProcess
+              ? [{ shell: session.launchProcess.command, args: [...session.launchProcess.args] }]
+              : resolveShellCandidates(shellResolver, platform, baseEnv);
             const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv, platform);
+            if (session.launchProcess) {
+              delete terminalEnv.NO_COLOR;
+              terminalEnv.TERM = "xterm-256color";
+            }
             // Append (never prepend) managed ACP agent install directories so
             // `kimi login` and friends resolve by name without shadowing any
             // system or user tool of the same name.
@@ -2305,6 +2318,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               session.process = ptyProcess;
               session.pid = processPid;
               session.status = "running";
+              session.hasRunningSubprocess = session.launchProcess !== null;
               // onExit may replay an exit immediately; accept it before subscribing.
               session.unsubscribeData = spawnResult.process.onData((data) => {
                 if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
@@ -2477,7 +2491,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         return;
       }
 
-      const next = inspectResult.value;
+      const next = session.launchProcess
+        ? { ...inspectResult.value, hasRunningSubprocess: true }
+        : inspectResult.value;
       yield* registerTerminalProcesses({
         threadId: session.threadId,
         terminalId: session.terminalId,
@@ -2587,7 +2603,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   );
 
   const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
-    input: TerminalOpenInput,
+    input: TerminalLaunch<TerminalOpenInput>,
   ) {
     const terminalId = input.terminalId;
     yield* assertValidCwd(input.cwd);
@@ -2624,6 +2640,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         hasRunningSubprocess: false,
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
+        launchProcess: input.process ?? null,
       };
 
       const createdSession = session;
@@ -2652,6 +2669,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     const liveSession = existing.value;
     const nextRuntimeEnv = normalizedRuntimeEnv(input.env);
+    const nextProcess = input.process ?? null;
     const currentRuntimeEnv = liveSession.runtimeEnv;
     const targetCols = input.cols ?? liveSession.cols;
     const targetRows = input.rows ?? liveSession.rows;
@@ -2659,6 +2677,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const nextWorktreePath =
       input.worktreePath !== undefined ? (input.worktreePath ?? null) : liveSession.worktreePath;
     const launchContextChanged =
+      !Equal.equals(liveSession.launchProcess, nextProcess) ||
       liveSession.cwd !== input.cwd ||
       runtimeEnvChanged ||
       liveSession.worktreePath !== nextWorktreePath;
@@ -2668,6 +2687,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       liveSession.cwd = input.cwd;
       liveSession.worktreePath = nextWorktreePath;
       liveSession.runtimeEnv = nextRuntimeEnv;
+      liveSession.launchProcess = nextProcess;
       liveSession.history.clear();
       liveSession.pendingHistoryControlSequence = "";
       liveSession.pendingProcessEvents = [];
@@ -2712,7 +2732,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
-  const openLocked = (input: TerminalOpenInput) =>
+  const openLocked = (input: TerminalLaunch<TerminalOpenInput>) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
       openWithWorkspaceLease(input),
@@ -2724,7 +2744,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
     );
 
-  const openOrAttachForStream = (input: TerminalAttachInput) =>
+  const openOrAttachForStream = (input: TerminalLaunch<TerminalAttachInput>) =>
     withThreadLock(
       input.threadId,
       Effect.gen(function* () {
@@ -3010,7 +3030,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
-  const restartResolved = (input: TerminalRestartInput) =>
+  const restartResolved = (input: TerminalLaunch<TerminalRestartInput>) =>
     Effect.gen(function* () {
       yield* increment(terminalRestartsTotal, { scope: "thread" });
       const terminalId = input.terminalId;
@@ -3047,6 +3067,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           hasRunningSubprocess: false,
           childCommandLabel: null,
           runtimeEnv: normalizedRuntimeEnv(input.env),
+          launchProcess: input.process ?? null,
         };
         const createdSession = session;
         yield* modifyManagerState((state) => {
@@ -3130,6 +3151,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const running = (yield* sessionsForThread(input.threadId)).filter(
           (session): session is TerminalSessionState & { pid: number } =>
             session.status === "running" &&
+            session.launchProcess === null &&
             Number.isInteger(session.pid) &&
             (input.terminalId === undefined || session.terminalId === input.terminalId),
         );

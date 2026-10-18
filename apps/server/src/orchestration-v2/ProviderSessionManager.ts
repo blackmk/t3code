@@ -46,6 +46,7 @@ import {
 } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as NativeTerminalRegistry from "../terminal/NativeTerminalRegistry.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -360,6 +361,9 @@ export const layerWithOptions = (
         },
       );
       const layerScope = yield* Effect.scope;
+      const nativeTerminals = yield* Effect.serviceOption(
+        NativeTerminalRegistry.NativeTerminalRegistry,
+      );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       const nextSubscriberId = yield* Ref.make(0);
       const sessionOpen = yield* makeKeyedSerialExecutor<ProviderSessionId>();
@@ -872,7 +876,9 @@ export const layerWithOptions = (
           if (
             entry === undefined ||
             entry.busyCount > 0 ||
-            entry.idleGeneration !== input.generation
+            entry.idleGeneration !== input.generation ||
+            (Option.isSome(nativeTerminals) &&
+              nativeTerminals.value.ownsSession(input.providerSessionId))
           ) {
             return;
           }
@@ -1612,51 +1618,51 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.make();
-              const runtime = yield* adapter
-                .openSession({
-                  threadId: input.threadId,
-                  providerSessionId: input.providerSessionId,
-                  modelSelection: input.modelSelection,
-                  runtimePolicy: input.runtimePolicy,
-                  ...(input.resumeFromSession === undefined
-                    ? {}
-                    : { resumeFromSession: input.resumeFromSession }),
-                  ...(input.initialNativeThreadId === undefined
-                    ? {}
-                    : { initialNativeThreadId: input.initialNativeThreadId }),
-                  ...(input.initialProviderItemIdentityVersion === undefined
-                    ? {}
-                    : {
-                        initialProviderItemIdentityVersion:
-                          input.initialProviderItemIdentityVersion,
-                      }),
-                })
-                .pipe(
-                  Effect.provideService(Scope.Scope, sessionScope),
-                  Effect.tapError(() =>
-                    Scope.close(sessionScope, Exit.void).pipe(
-                      Effect.ignore,
-                      Effect.andThen(dropReservation),
-                      // Revoke only a credential this open freshly minted: a
-                      // reused credential is held by another live provider
-                      // process and must survive this open's failure.
-                      Effect.andThen(
-                        prepared.issued
-                          ? clearMcpSession(input.threadId, mcpCredentialId)
-                          : Effect.void,
-                      ),
+              const openSession = Option.isSome(nativeTerminals)
+                ? (nativeTerminals.value.get(input.threadId) ?? adapter.openSession)
+                : adapter.openSession;
+              const runtime = yield* openSession({
+                threadId: input.threadId,
+                providerSessionId: input.providerSessionId,
+                modelSelection: input.modelSelection,
+                runtimePolicy: input.runtimePolicy,
+                ...(input.resumeFromSession === undefined
+                  ? {}
+                  : { resumeFromSession: input.resumeFromSession }),
+                ...(input.initialNativeThreadId === undefined
+                  ? {}
+                  : { initialNativeThreadId: input.initialNativeThreadId }),
+                ...(input.initialProviderItemIdentityVersion === undefined
+                  ? {}
+                  : {
+                      initialProviderItemIdentityVersion: input.initialProviderItemIdentityVersion,
+                    }),
+              }).pipe(
+                Effect.provideService(Scope.Scope, sessionScope),
+                Effect.tapError(() =>
+                  Scope.close(sessionScope, Exit.void).pipe(
+                    Effect.ignore,
+                    Effect.andThen(dropReservation),
+                    // Revoke only a credential this open freshly minted: a
+                    // reused credential is held by another live provider
+                    // process and must survive this open's failure.
+                    Effect.andThen(
+                      prepared.issued
+                        ? clearMcpSession(input.threadId, mcpCredentialId)
+                        : Effect.void,
                     ),
                   ),
-                  Effect.onInterrupt(() => dropReservation),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderSessionOpenError({
-                        instanceId: input.modelSelection.instanceId,
-                        providerSessionId: input.providerSessionId,
-                        cause,
-                      }),
-                  ),
-                );
+                ),
+                Effect.onInterrupt(() => dropReservation),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
               const eventSubscribers = yield* Ref.make<
                 ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
               >(new Map());

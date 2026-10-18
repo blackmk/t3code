@@ -1,4 +1,5 @@
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
+import * as NativeTerminalRegistry from "../terminal/NativeTerminalRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
 import * as OrchestrationCommandReceipts from "../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -297,6 +298,10 @@ const providerRuntimeRecoveryProvided = providerRuntimeRecoveryLayer.pipe(
 );
 
 export const OrchestrationV2LayerLive = Layer.mergeAll(
+  idAllocatorLayer,
+  projectionStoreLayer,
+  providerEventIngestorProvided,
+  runtimePolicyProvided,
   orchestratorProvided,
   threadManagementProvided,
   effectWorkerProvided,
@@ -321,5 +326,6 @@ export const OrchestrationV2ProductionLayerLive = Layer.mergeAll(
   agentSessionImporterProvided,
 ).pipe(
   Layer.provide(Scheduler.layer),
+  Layer.provideMerge(NativeTerminalRegistry.layer),
   Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
 );

@@ -546,6 +546,7 @@ export interface GhosttyTerminalSurfaceOptions {
   readonly onResize: (cols: number, rows: number) => void;
   readonly onSelectionChange: () => void;
   readonly beforeKey: (event: KeyboardEvent) => boolean;
+  readonly onEmptyClipboardPaste?: () => void;
   readonly onLinkActivate: (text: string, event: MouseEvent) => void;
   /**
    * A right-click the running application did not claim through mouse
@@ -942,7 +943,10 @@ export class GhosttyTerminalSurface {
     // As in every paste path, delivering bumps the token so a clipboard read
     // still in flight cannot land after this text reaches the shell.
     this.pasteShortcutToken += 1;
-    if (text.length === 0) return;
+    if (text.length === 0) {
+      this.options.onEmptyClipboardPaste?.();
+      return;
+    }
     const encoded = this.core.encodePaste(text);
     if (encoded.length > 0) this.options.onData(encoded);
   }

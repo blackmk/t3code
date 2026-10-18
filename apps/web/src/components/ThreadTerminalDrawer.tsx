@@ -60,6 +60,7 @@ import { useOpenInPreferredEditor } from "../editorPreferences";
 import { isTerminalUrl, resolvePathLinkTarget } from "../terminal-links";
 import {
   isDiffToggleShortcut,
+  matchesCommandShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
@@ -307,6 +308,11 @@ export function shouldHandleTerminalExit(
 }
 
 interface TerminalViewportProps {
+  nativeAgent?: boolean;
+  /** Holds the session attach until the owner has opened it at the measured grid. */
+  attachReady?: boolean;
+  /** Every settled grid size, including the first fit after mount. */
+  onGridResize?: (cols: number, rows: number) => void;
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
   threadId: ThreadId;
@@ -333,6 +339,9 @@ interface TerminalLaunchLocation {
 }
 
 export function TerminalViewport({
+  nativeAgent = false,
+  attachReady = true,
+  onGridResize,
   advancedTypography,
   threadRef,
   threadId,
@@ -403,14 +412,19 @@ export function TerminalViewport({
   const terminalFontRef = useRef({ family: terminalFontFamily, size: terminalFontSize });
   const terminalSession = useAttachedTerminalSession({
     environmentId,
-    terminal: {
-      threadId,
-      terminalId,
-      cwd,
-      ...(worktreePath !== undefined ? { worktreePath } : {}),
-      ...(runtimeEnv ? { env: runtimeEnv } : {}),
-      ...(providerInstanceId ? { providerInstanceId } : {}),
-    },
+    terminal: attachReady
+      ? {
+          threadId,
+          terminalId,
+          cwd,
+          ...(worktreePath !== undefined ? { worktreePath } : {}),
+          ...(runtimeEnv ? { env: runtimeEnv } : {}),
+          ...(providerInstanceId ? { providerInstanceId } : {}),
+        }
+      : null,
+  });
+  const handleGridResize = useEffectEvent((cols: number, rows: number) => {
+    onGridResize?.(cols, rows);
   });
   const writeTerminal = useEffectEvent((data: string) =>
     runTerminalWrite({
@@ -497,7 +511,12 @@ export function TerminalViewport({
           return visibleRef.current;
         },
         onData: (data) => handleData(data),
-        onResize: (cols, rows) => void resizeTerminal(cols, rows),
+        ...(nativeAgent ? { onEmptyClipboardPaste: () => handleData("\u0016") } : {}),
+        onResize: (cols, rows) => {
+          // Disposal flushes a pending resize; the owner is already gone then.
+          if (!cancelled) handleGridResize(cols, rows);
+          void resizeTerminal(cols, rows);
+        },
         onSelectionChange: () => handleSelectionChange(),
         beforeKey: (event) => handleBeforeKey(event),
         onLinkActivate: (text, event) => handleLinkActivate(text, event),
@@ -745,6 +764,11 @@ export function TerminalViewport({
       function handleBeforeKey(event: KeyboardEvent): boolean {
         const currentKeybindings = keybindingsRef.current;
         const options = { context: { terminalFocus: true, terminalOpen: true } };
+        if (nativeAgent) {
+          return !matchesCommandShortcut(event, currentKeybindings, "chat.toggleTerminalView", {
+            context: { ...options.context, isDesktop: true },
+          });
+        }
         if (preventTerminalCloseShortcut(event, currentKeybindings)) {
           return false;
         }
@@ -802,7 +826,7 @@ export function TerminalViewport({
             threadRef,
             openPreview,
             fallbackToBrowser,
-            forceBrowser: event.metaKey || event.ctrlKey,
+            forceBrowser: nativeAgent || event.metaKey || event.ctrlKey,
           }).catch((error: unknown) => {
             toastManager.add(
               stackedThreadToast({
@@ -920,7 +944,7 @@ export function TerminalViewport({
       teardown?.();
       if (hadFocus && mount.isConnected) mount.focus({ preventScroll: true });
     };
-  }, [cwd, environmentId, runtimeEnvKey, terminalId, threadId, worktreePath]);
+  }, [cwd, environmentId, nativeAgent, runtimeEnvKey, terminalId, threadId, worktreePath]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

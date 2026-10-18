@@ -225,7 +225,7 @@ function findEffectiveShortcutForCommand(
   return null;
 }
 
-function matchesCommandShortcut(
+export function matchesCommandShortcut(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
   command: KeybindingCommand,

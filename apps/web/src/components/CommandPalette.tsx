@@ -84,6 +84,7 @@ import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstra
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
+import { requestAgentTerminalToggle } from "../state/agentTerminalView";
 import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { useCustomThemes } from "../hooks/useCustomThemes";
@@ -1863,6 +1864,23 @@ function OpenCommandPaletteDialog(props: {
   ]);
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
+  if (
+    window.desktopBridge &&
+    activeThreadServerConfig?.environment.capabilities.nativeAgentTerminal === true &&
+    activeThread
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:toggle-agent-terminal",
+      title: "Switch Chat and Terminal",
+      searchTerms: ["agent", "native", "codex", "claude", "terminal", "chat"],
+      shortcutCommand: "chat.toggleTerminalView",
+      icon: null,
+      run: async () => {
+        requestAgentTerminalToggle();
+      },
+    });
+  }
 
   if (projects.length > 0) {
     const activeProjectTitle =

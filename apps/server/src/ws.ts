@@ -173,6 +173,8 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as AgentTerminal from "./terminal/AgentTerminal.ts";
+import { AGENT_TERMINAL_ID } from "@t3tools/contracts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -1161,6 +1163,7 @@ const makeWsRpcLayer = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
+      const agentTerminal = yield* AgentTerminal.AgentTerminal;
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -3346,15 +3349,43 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "review" },
           ),
         [WS_METHODS.terminalOpen]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.terminalOpen,
+            input.terminalId === AGENT_TERMINAL_ID
+              ? agentTerminal.open(input)
+              : terminalManager.open(input),
+            {
+              "rpc.aggregate": "terminal",
+            },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
             Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
               Effect.acquireRelease(
-                terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                input.terminalId === AGENT_TERMINAL_ID
+                  ? agentTerminal
+                      .open({
+                        threadId: input.threadId,
+                        terminalId: AGENT_TERMINAL_ID,
+                        cwd: input.cwd ?? "",
+                        cols: input.cols,
+                        rows: input.rows,
+                      })
+                      .pipe(
+                        Effect.andThen(
+                          terminalManager.attachStream(
+                            {
+                              threadId: input.threadId,
+                              terminalId: AGENT_TERMINAL_ID,
+                              cols: input.cols,
+                              rows: input.rows,
+                            },
+                            (event) => Queue.offer(queue, event),
+                          ),
+                        ),
+                      )
+                  : terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
                 (unsubscribe) => Effect.sync(unsubscribe),
               ),
             ),
@@ -3373,13 +3404,25 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "terminal",
           }),
         [WS_METHODS.terminalRestart]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalRestart, terminalManager.restart(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.terminalRestart,
+            input.terminalId === AGENT_TERMINAL_ID
+              ? agentTerminal.restart(input)
+              : terminalManager.restart(input),
+            {
+              "rpc.aggregate": "terminal",
+            },
+          ),
         [WS_METHODS.terminalClose]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalClose, terminalManager.close(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.terminalClose,
+            input.terminalId === AGENT_TERMINAL_ID
+              ? agentTerminal.close(input)
+              : terminalManager.close(input),
+            {
+              "rpc.aggregate": "terminal",
+            },
+          ),
         [WS_METHODS.subscribeTerminalEvents]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
