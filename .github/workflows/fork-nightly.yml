@@ -1,0 +1,389 @@
+name: Fork nightly
+
+# Rebuilds the newest upstream nightly with this fork's commits on top and
+# publishes it as a nightly release of this repository. Builds embed this
+# repository as their update feed, so once a fork build is installed the
+# desktop app's Update button follows these releases. Windows x64 only,
+# unsigned, without the bundled WSL runtime.
+#
+# The fork's commits are rebased onto each upstream nightly tag inside the run;
+# nothing is pushed back. When they stop applying, the run fails and opens an
+# issue, and the last good release stays current until the branch is rebased.
+# A release's notes record the upstream tag and fork commit it was built from,
+# which is how later runs skip work that is already published.
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream nightly tag to build (default: newest)"
+        required: false
+        type: string
+      force:
+        description: "Rebuild even when this tag and fork commit were already released"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: fork-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: pingdotgg/t3code
+
+jobs:
+  resolve:
+    name: Rebase onto upstream nightly
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - id: plan
+        name: Choose upstream nightly and version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            tag="$REQUESTED_TAG"
+          else
+            # v<base>-nightly.<YYYYMMDD>.<run>: order by date, then run.
+            tag="$(git ls-remote --tags --refs "${GITHUB_SERVER_URL}/${UPSTREAM_REPOSITORY}.git" 'v*-nightly.*' \
+              | sed 's#.*refs/tags/##' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$' \
+              | sort -t. -k4,4n -k5,5n \
+              | tail -n 1)"
+          fi
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8})\.([0-9]+)$ ]]; then
+            echo "::error::'$tag' is not an upstream nightly tag."
+            exit 1
+          fi
+          base="${BASH_REMATCH[1]}"
+          run="${BASH_REMATCH[2]}"
+
+          releases="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | jq '[.[][] | .body // ""]')"
+          built="$(jq --arg tag "Upstream: $tag" '[.[] | select(contains($tag))] | length' <<<"$releases")"
+          same="$(jq --arg tag "Upstream: $tag" --arg sha "Fork commit: $GITHUB_SHA" \
+            '[.[] | select(contains($tag) and contains($sha))] | length' <<<"$releases")"
+          if [[ "$same" != "0" && "$FORCE" != "true" ]]; then
+            echo "Already released $tag with $GITHUB_SHA."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The updater only follows X.Y.Z-nightly.YYYYMMDD.N. Two extra digits
+          # on upstream's run number order rebuilds of one tag after each other
+          # and before the next upstream nightly.
+          if (( built > 99 )); then
+            echo "::error::Too many rebuilds of $tag."
+            exit 1
+          fi
+          version="${base}.${run}$(printf '%02d' "$built")"
+          echo "Building $version from $tag and $GITHUB_SHA."
+          {
+            echo "skip=false"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebase fork commits onto the nightly
+        if: steps.plan.outputs.skip == 'false'
+        shell: bash
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          GIT_TERMINAL_PROMPT: "0"
+        # A blobless clone keeps the history the rebase needs and fetches file
+        # contents on demand. .repos holds orphaned gitlinks and stays out.
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git remote add upstream "${GITHUB_SERVER_URL}/${UPSTREAM_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git fetch -q --no-tags --filter=blob:none origin "$GITHUB_SHA"
+          git fetch -q --no-tags --filter=blob:none upstream "refs/tags/$TAG:refs/tags/$TAG"
+          git checkout -q --detach "$GITHUB_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rebase --onto "$TAG" "$(git merge-base HEAD "$TAG")" HEAD; then
+            git rebase --abort || true
+            echo "conflict=true" >> "$GITHUB_ENV"
+            echo "::error::The fork's commits do not apply to $TAG. Rebase the branch onto it and push."
+            exit 1
+          fi
+          git diff --binary "$TAG" HEAD > "$RUNNER_TEMP/fork.patch"
+
+      - name: Report rebase conflict
+        if: failure() && env.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          title="Fork nightly: commits no longer apply to upstream nightly"
+          open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq length || echo 0)"
+          if [[ "$open" == "0" ]]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "Rebasing ${GITHUB_SHA} onto ${TAG} conflicted (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}). Rebase the branch onto ${TAG} and push; the next scheduled run picks it up." \
+              || echo "::warning::Could not open an issue (issues may be disabled on this repository)."
+          fi
+
+      - name: Upload fork patch
+        if: steps.plan.outputs.skip == 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fork-patch
+          path: ${{ runner.temp }}/fork.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  build_bundle:
+    name: Build JS bundle
+    needs: resolve
+    if: needs.resolve.outputs.skip == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - name: Checkout upstream nightly
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add upstream "${GITHUB_SERVER_URL}/${UPSTREAM_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git fetch -q --no-tags --depth=1 upstream "refs/tags/$TAG"
+          git -c checkout.workers=0 checkout -q --detach FETCH_HEAD
+
+      - name: Download fork patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-patch
+          path: ${{ runner.temp }}/fork-patch
+
+      # .env.example holds the public T3 Connect identifiers; the upstream relay
+      # state and its tracing token are not available to forks.
+      - name: Apply fork patch and load public configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --binary "$RUNNER_TEMP/fork-patch/fork.patch"
+          for name in T3CODE_CLERK_PUBLISHABLE_KEY T3CODE_CLERK_JWT_TEMPLATE T3CODE_CLERK_CLI_OAUTH_CLIENT_ID T3CODE_RELAY_URL; do
+            value="$(sed -n "s/^${name}=//p" .env.example | head -n 1)"
+            if [[ ! "$value" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
+              echo "::error::$name is missing or malformed in .env.example."
+              exit 1
+            fi
+            echo "${name}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      # @t3tools/desktop#build compiles the Linux browser secret helper.
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop_windows:
+    name: Desktop Windows x64
+    needs: [resolve, build_bundle]
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      # The runner's global autocrlf would check out CRLF files the LF patch
+      # cannot apply to.
+      - name: Checkout upstream nightly
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init -q .
+          git config core.autocrlf false
+          git remote add upstream "${GITHUB_SERVER_URL}/${UPSTREAM_REPOSITORY}.git"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git fetch -q --no-tags --depth=1 upstream "refs/tags/$TAG"
+          git -c checkout.workers=0 checkout -q --detach FETCH_HEAD
+
+      - name: Download fork patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-patch
+          path: ${{ runner.temp }}/fork-patch
+
+      - name: Apply fork patch and load public configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --binary "$RUNNER_TEMP/fork-patch/fork.patch"
+          for name in T3CODE_CLERK_PUBLISHABLE_KEY T3CODE_CLERK_JWT_TEMPLATE T3CODE_CLERK_CLI_OAUTH_CLIENT_ID T3CODE_RELAY_URL; do
+            value="$(sed -n "s/^${name}=//p" .env.example | head -n 1)"
+            echo "${name}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install desktop dependencies
+        run: vp install --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Cache resource monitor
+        id: resource_monitor_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe
+          key: resource-monitor-x86_64-pc-windows-msvc-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
+
+      - name: Setup Rust
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Spectre-mitigated MSVC libs
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe `
+            -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
+            -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) {
+            $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
+            Write-Error "Visual Studio Installer failed with exit code $code"
+            exit $code
+          }
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$env:VERSION"
+
+      - name: Download JS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: js-bundle
+          path: apps
+
+      - name: Build desktop artifact
+        shell: bash
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: ${{ steps.resource_monitor_cache.outputs.cache-hit == 'true' }}
+        run: |
+          vp run dist:desktop:artifact \
+            --platform win --target nsis --arch x64 \
+            --build-version "$VERSION" --skip-build --verbose
+
+      # A single architecture keeps electron-builder's own nightly.yml as the feed.
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for file in release/*.exe release/*.blockmap release/*.yml; do
+            [[ "$file" == */builder-debug.yml ]] && continue
+            cp "$file" release-publish/
+          done
+          ls -la release-publish
+          test -f release-publish/nightly.yml
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-win-x64
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  release:
+    name: Publish fork release
+    needs: [resolve, desktop_windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-win-x64
+          path: release-assets
+
+      # The notes' "Upstream:" and "Fork commit:" lines are read back by resolve.
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum -- * > SHA256SUMS)
+          notes="$(printf '%s\n' \
+            "Upstream nightly ${TAG} with this fork's commits." \
+            "" \
+            "Upstream: ${TAG}" \
+            "Fork commit: ${GITHUB_SHA}" \
+            "" \
+            "Upstream release: ${GITHUB_SERVER_URL}/${UPSTREAM_REPOSITORY}/releases/tag/${TAG}")"
+          gh release create "v${VERSION}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "T3 Code Nightly ${VERSION} (fork)" \
+            --notes "$notes"
