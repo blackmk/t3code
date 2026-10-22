@@ -670,12 +670,11 @@ export const makeNativeRuntime = Effect.fn("terminal.makeNativeRuntime")(functio
     startTurn: begin,
     compactThread: begin,
     steerTurn: () => unsupported("Submit follow-up messages in the native terminal."),
-    interruptTurn: () =>
-      Effect.gen(function* () {
-        const done = active?.done;
-        yield* options.interrupt;
-        if (done) yield* Deferred.await(done);
-      }),
+    interruptTurn: Effect.fn("terminal.native.interrupt")(function* () {
+      const done = active?.done;
+      yield* options.interrupt;
+      if (done) yield* Deferred.await(done);
+    }),
     respondToRuntimeRequest: () => unsupported("Answer approvals in the native terminal."),
     readThreadSnapshot: () => unsupported("Return to Chat before reading a provider snapshot."),
     rollbackThread: () => unsupported("Return to Chat before restoring a checkpoint."),
@@ -699,17 +698,19 @@ export const makeNativeRuntime = Effect.fn("terminal.makeNativeRuntime")(functio
     get providerThread() {
       return providerThread;
     },
-    setNativeTurn: (nativeId: string, strength: "strong" | "weak" = "strong") =>
-      Effect.gen(function* () {
-        if (!active) return;
-        active.turn = { ...active.turn, nativeTurnRef: { driver, nativeId, strength } };
-        yield* emit({
-          type: "provider_turn.updated",
-          driver,
-          threadId: input.threadId,
-          providerTurn: active.turn,
-        });
-      }),
+    setNativeTurn: Effect.fn("terminal.native.setTurn")(function* (
+      nativeId: string,
+      strength: "strong" | "weak" = "strong",
+    ) {
+      if (!active) return;
+      active.turn = { ...active.turn, nativeTurnRef: { driver, nativeId, strength } };
+      yield* emit({
+        type: "provider_turn.updated",
+        driver,
+        threadId: input.threadId,
+        providerTurn: active.turn,
+      });
+    }),
   };
 });
 

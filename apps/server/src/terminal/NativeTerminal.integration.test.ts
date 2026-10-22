@@ -3,10 +3,12 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -113,6 +115,8 @@ it.effect(
             type: "subagent.stop",
             commandId: CommandId.make("native-subagent-stop"),
             threadId,
+            runId: RunId.make("native-run"),
+            subagentId: NodeId.make("native-subagent"),
           })
           .pipe(Effect.result);
         assert.equal(stopSubagents._tag, "Failure");
@@ -251,7 +255,6 @@ it.effect(
         }
       }).pipe(Effect.provide(Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer)));
     }),
-  30_000,
 );
 
 it.effect(
@@ -405,5 +408,4 @@ it.effect(
         assert.equal(reviewChild.messages.at(-1)?.text, "Still good");
       }).pipe(Effect.provide(Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer)));
     }),
-  30_000,
 );

@@ -6,9 +6,9 @@ name: Fork nightly
 # desktop app's Update button follows these releases. Windows x64 only,
 # unsigned, without the bundled WSL runtime.
 #
-# The fork's commits are rebased onto each upstream nightly tag inside the run;
-# nothing is pushed back. When they stop applying, the run fails and opens an
-# issue, and the last good release stays current until the branch is rebased.
+# Each upstream nightly is merged into the maintained fork inside the run;
+# nothing is pushed back. Conflicts or build failures open an issue assigned to
+# the fork owner, and the last good release stays current until they are fixed.
 # A release's notes record the upstream tag and fork commit it was built from,
 # which is how later runs skip work that is already published.
 
@@ -39,13 +39,12 @@ env:
 
 jobs:
   resolve:
-    name: Rebase onto upstream nightly
+    name: Merge upstream nightly
     if: github.repository != 'pingdotgg/t3code'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
-      issues: write
     outputs:
       skip: ${{ steps.plan.outputs.skip }}
       tag: ${{ steps.plan.outputs.tag }}
@@ -102,13 +101,13 @@ jobs:
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Rebase fork commits onto the nightly
+      - name: Merge the nightly into the fork
         if: steps.plan.outputs.skip == 'false'
         shell: bash
         env:
           TAG: ${{ steps.plan.outputs.tag }}
           GIT_TERMINAL_PROMPT: "0"
-        # A blobless clone keeps the history the rebase needs and fetches file
+        # A blobless clone keeps the history the merge needs and fetches file
         # contents on demand. .repos holds orphaned gitlinks and stays out.
         run: |
           set -euo pipefail
@@ -121,28 +120,12 @@ jobs:
           git checkout -q --detach "$GITHUB_SHA"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git rebase --onto "$TAG" "$(git merge-base HEAD "$TAG")" HEAD; then
-            git rebase --abort || true
-            echo "conflict=true" >> "$GITHUB_ENV"
-            echo "::error::The fork's commits do not apply to $TAG. Rebase the branch onto it and push."
+          if ! git merge --no-edit "$TAG"; then
+            git merge --abort || true
+            echo "::error::The fork conflicts with $TAG. Merge it into the fork, resolve the conflicts, and push."
             exit 1
           fi
           git diff --binary "$TAG" HEAD > "$RUNNER_TEMP/fork.patch"
-
-      - name: Report rebase conflict
-        if: failure() && env.conflict == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.plan.outputs.tag }}
-        run: |
-          title="Fork nightly: commits no longer apply to upstream nightly"
-          open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq length || echo 0)"
-          if [[ "$open" == "0" ]]; then
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
-              --body "Rebasing ${GITHUB_SHA} onto ${TAG} conflicted (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}). Rebase the branch onto ${TAG} and push; the next scheduled run picks it up." \
-              || echo "::warning::Could not open an issue (issues may be disabled on this repository)."
-          fi
 
       - name: Upload fork patch
         if: steps.plan.outputs.skip == 'false'
@@ -209,6 +192,12 @@ jobs:
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Verify native terminal and update integration
+        run: |
+          vp test run apps/server/src/terminal/NativeClaude.test.ts apps/server/src/terminal/NativeTerminal.integration.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/terminal/OutputProtocol.test.ts
+          vp exec tsc --noEmit --project apps/server/tsconfig.json
+          vp exec tsc --noEmit --project apps/web/tsconfig.json
 
       # @t3tools/desktop#build compiles the Linux browser secret helper.
       - name: Install browser secret helper build libraries
@@ -387,3 +376,39 @@ jobs:
             --prerelease \
             --title "T3 Code Nightly ${VERSION} (fork)" \
             --notes "$notes"
+
+  report:
+    name: Report build failures
+    needs: [resolve, build_bundle, desktop_windows, release]
+    if: always() && github.repository != 'pingdotgg/t3code' && (contains(needs.*.result, 'failure') || needs.release.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open a failure issue or close the resolved incident
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ toJSON(needs) }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          title="Fork nightly: build failed"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          failed="$(jq -r 'to_entries | map(select(.value.result == "failure") | .key) | join(", ")' <<<"$RESULTS")"
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" \
+            --json number,title --jq '.[] | select(.title == "Fork nightly: build failed") | .number' | head -n 1)"
+          if [[ -n "$failed" ]]; then
+            printf 'Failed jobs: %s\n\n[Build log](%s)\n' "$failed" "$run_url" >> "$GITHUB_STEP_SUMMARY"
+            if [[ -z "$issue" ]]; then
+              printf 'The fork nightly could not be published.\n\nFailed jobs: %s\nUpstream: %s\nFork commit: %s\n\nBuild log: %s\n\nResolve upstream conflicts or build errors and push to the default branch. The next run retries automatically.\n' \
+                "$failed" "${TAG:-unresolved}" "$GITHUB_SHA" "$run_url" > "$RUNNER_TEMP/failure.md"
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+                --assignee "${GITHUB_REPOSITORY%%/*}" --body-file "$RUNNER_TEMP/failure.md"
+            fi
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" \
+              --comment "Fork nightly publishing recovered: $run_url"
+          fi

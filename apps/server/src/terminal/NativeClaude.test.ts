@@ -188,6 +188,13 @@ it.effect(
           }),
           {},
         );
+        // So are messages its agents send, with or without a header line.
+        for (const prompt of [
+          '<agent-message from="agent-1">\nStaged.\n</agent-message>',
+          'Another Claude session sent a message while you were working:\n<agent-message from="agent-1">\nStaged.\n</agent-message>',
+        ]) {
+          assert.deepEqual(yield* hook("UserPromptSubmit", { prompt }), {});
+        }
         yield* hook("PreToolUse", {
           tool_use_id: "edit",
           tool_name: "Write",
@@ -331,5 +338,4 @@ it.effect(
         assert.isUndefined(runtime.active);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer))),
-  30_000,
 );

@@ -51,8 +51,11 @@ function refuse(event: string, reason: string): Record<string, unknown> {
   return REFUSABLE_EVENTS.has(event) ? { decision: "block", reason } : {};
 }
 
-/** Claude Code submits finished background work to the model as a prompt. */
-const isTaskNotification = (prompt: string) => prompt.trimStart().startsWith("<task-notification>");
+// Claude Code hands background work to the model as a prompt: finished tasks as
+// task notifications, and what its agents or peer sessions send as agent
+// messages, which can follow a one-line header.
+const BACKGROUND_PROMPT = /^\s*(?:[^\n<]*:\n)?<(?:task-notification|agent-message)[\s>]/;
+const BACKGROUND_ENTRY = /<(?:task-notification|agent-message)[\s>]/;
 
 /**
  * Whether the conversation's latest exchange ended in an Esc cancellation,
@@ -62,7 +65,7 @@ function lastTurnInterrupted(entries: ReadonlyArray<Record<string, unknown>>): b
   for (const entry of entries) {
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     const content = json(record(entry.message).content ?? "");
-    if (entry.type === "user" && content.includes("<task-notification>")) continue;
+    if (entry.type === "user" && BACKGROUND_ENTRY.test(content)) continue;
     return entry.type === "user" && content.includes("[Request interrupted by user");
   }
   return false;
@@ -186,12 +189,12 @@ export const makeNativeClaude = Effect.fn("terminal.makeNativeClaude")(function*
               if (!runtime) return refuse(event, "The T3 terminal is not ready. Restart it.");
               if (event === "UserPromptSubmit") {
                 const prompt = string(payload.prompt);
-                // Background-task notifications also arrive mid-turn; they continue
-                // the running turn rather than start one, unless that turn was
+                // Background prompts also arrive mid-turn; they continue the
+                // running turn rather than start one, unless that turn was
                 // cancelled with Esc, which fires no hook.
                 if (
                   runtime.active &&
-                  isTaskNotification(prompt) &&
+                  BACKGROUND_PROMPT.test(prompt) &&
                   !lastTurnInterrupted(yield* readTranscriptTail(string(payload.transcript_path)))
                 )
                   return {};

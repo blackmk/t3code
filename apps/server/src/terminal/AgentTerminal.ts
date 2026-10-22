@@ -46,6 +46,7 @@ import {
   ProviderAdapterProtocolError,
   ProviderAdapterTurnStartError,
   type ProviderAdapterV2TurnInput,
+  type ProviderAdapterV2OpenSessionInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Registry from "./NativeTerminalRegistry.ts";
 import * as Manager from "./Manager.ts";
@@ -68,6 +69,7 @@ export class AgentTerminal extends Context.Service<
     readonly open: (
       input: TerminalOpenInput,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+    readonly attachStream: Manager.TerminalManager["Service"]["attachStream"];
     readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
     readonly restart: (
       input: TerminalOpenInput,
@@ -77,7 +79,7 @@ export class AgentTerminal extends Context.Service<
 
 const isNativeTerminalError = Schema.is(NativeTerminalError);
 
-const LIVE_RUN_STATUSES = ["preparing", "starting", "running", "waiting", "queued"];
+const LIVE_RUN_STATUSES = new Set(["preparing", "starting", "running", "waiting", "queued"]);
 
 /**
  * A native completion or interrupt reaches the projections asynchronously, so
@@ -93,13 +95,13 @@ export const awaitNativeRunSettled = Effect.fn("terminal.agent.awaitRunSettled")
   const sequence = yield* engine.getThreadEventSequence(threadId);
   const { runs } = yield* engine.getThreadRecords(threadId, ["runs"]);
   const run = runs.find((candidate) => candidate.id === runId);
-  if (!run || !LIVE_RUN_STATUSES.includes(run.status)) return;
+  if (!run || !LIVE_RUN_STATUSES.has(run.status)) return;
   yield* engine.streamStoredEventsFrom({ threadId, afterSequence: sequence }).pipe(
     Stream.filter(
       ({ event }) =>
         event.type === "run.updated" &&
         event.payload.id === runId &&
-        !LIVE_RUN_STATUSES.includes(event.payload.status),
+        !LIVE_RUN_STATUSES.has(event.payload.status),
     ),
     Stream.take(1),
     Stream.runDrain,
@@ -149,27 +151,26 @@ export const layer = Layer.effect(
       Effect.mapError((cause: unknown) =>
         isNativeTerminalError(cause) ? cause : fail(threadId, detail, cause),
       );
-    const resolveTerminalProcess = (
+    const resolveTerminalProcess = Effect.fn("terminal.agent.resolveProcess")(function* (
       command: string,
       args: ReadonlyArray<string>,
       env: NodeJS.ProcessEnv,
-    ) =>
-      Effect.gen(function* () {
-        const launch = yield* resolveSpawnCommand(command, args, { env });
-        if (!launch.shell) return { command: launch.command, args: launch.args };
-        const executable = resolveExecutable(command, platform, env) ?? command;
-        const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
-        return {
-          command: "powershell.exe",
-          args: [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `& ${[executable, ...args].map(quote).join(" ")}; exit $LASTEXITCODE`,
-          ],
-        };
-      });
+    ) {
+      const launch = yield* resolveSpawnCommand(command, args, { env });
+      if (!launch.shell) return { command: launch.command, args: launch.args };
+      const executable = resolveExecutable(command, platform, env) ?? command;
+      const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      return {
+        command: "powershell.exe",
+        args: [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `& ${[executable, ...args].map(quote).join(" ")}; exit $LASTEXITCODE`,
+        ],
+      };
+    });
 
     const ensureIdle = Effect.fn("terminal.agent.ensureIdle")(function* (threadId: ThreadId) {
       const sequence = yield* engine.getThreadEventSequence(threadId);
@@ -402,23 +403,26 @@ export const layer = Layer.effect(
             }),
           )
           .pipe(mapError(threadId, "Could not prepare the native turn."));
-      const prepare = (turnInput: ProviderAdapterV2TurnInput) =>
-        Effect.gen(function* () {
-          const ready = pending.get(turnInput.message.messageId);
-          if (!ready)
-            return yield* Effect.fail(
-              new ProviderAdapterTurnStartError({
-                driver,
-                threadId,
-                providerThreadId: turnInput.providerThread.id,
-                runId: turnInput.runId,
-                cause: "The native prompt was cancelled before its workspace was ready.",
-              }),
-            );
-          yield* Deferred.succeed(ready, turnInput);
-        });
-      const openNative: Parameters<typeof registry.register>[2] = (sessionInput) =>
-        Effect.gen(function* () {
+      const prepare = Effect.fn("terminal.agent.prepare")(function* (
+        turnInput: ProviderAdapterV2TurnInput,
+      ) {
+        const ready = pending.get(turnInput.message.messageId);
+        if (!ready)
+          return yield* Effect.fail(
+            new ProviderAdapterTurnStartError({
+              driver,
+              threadId,
+              providerThreadId: turnInput.providerThread.id,
+              runId: turnInput.runId,
+              cause: "The native prompt was cancelled before its workspace was ready.",
+            }),
+          );
+        yield* Deferred.succeed(ready, turnInput);
+      });
+      const openNative: Parameters<typeof registry.register>[2] = Effect.fn(
+        "terminal.agent.openSession",
+      )(
+        function* (sessionInput: ProviderAdapterV2OpenSessionInput) {
           // The CLI's hooks and bridge live in this session's scope, so a
           // session closed for any reason must not leave the CLI running.
           yield* Effect.addFinalizer(() =>
@@ -616,12 +620,12 @@ export const layer = Layer.effect(
             );
           }
           return nativeRuntime.runtime;
-        }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapterOpenSessionError({ driver, providerSessionId: sessionId, cause }),
-          ),
-        );
+        },
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterOpenSessionError({ driver, providerSessionId: sessionId, cause }),
+        ),
+      );
       return yield* Effect.gen(function* () {
         yield* registry.register(threadId, sessionId, openNative);
         if (previous?.providerSessionId)
@@ -701,6 +705,28 @@ export const layer = Layer.effect(
         lifecycle
           .withPermits(1)(open(input))
           .pipe(mapError(input.threadId, "Could not open the agent terminal.")),
+      attachStream: (input, listener, registerCleanup) =>
+        lifecycle
+          .withPermits(1)(
+            Effect.gen(function* () {
+              // Reconnecting after a close must not restart the native agent.
+              if (input.resume && !entries.has(ThreadId.make(input.threadId)))
+                return yield* manager.resyncStream(input, listener, registerCleanup);
+              yield* open({ ...input, cwd: input.cwd ?? "" });
+              return yield* manager.attachStream(
+                {
+                  threadId: input.threadId,
+                  terminalId: AGENT_TERMINAL_ID,
+                  cols: input.cols,
+                  rows: input.rows,
+                  resume: input.resume,
+                },
+                listener,
+                registerCleanup,
+              );
+            }),
+          )
+          .pipe(mapError(input.threadId, "Could not attach to the agent terminal.")),
       close: (input) =>
         lifecycle
           .withPermits(1)(close(input))
