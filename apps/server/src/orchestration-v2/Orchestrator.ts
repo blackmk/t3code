@@ -15465,7 +15465,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ].includes(command.type) ||
         // A pull request wake would start a turn the CLI never asked for. Refused,
         // the watch update is not recorded, so the watch delivers it after Chat returns.
-        (command.type === "thread.pull-request-watch.sync" && command.wake !== undefined)) &&
+        (command.type === "thread.pull-request-watch.sync" && command.wake !== undefined) ||
+        // A continuation queues a message in the same commit as the metadata change.
+        (command.type === "thread.metadata.update" && command.continuation !== undefined)) &&
       !nativeTerminals.value.admits(commandThreadId(command), command.commandId)
     ) {
       return yield* new OrchestratorNativeTerminalOwnedError({
