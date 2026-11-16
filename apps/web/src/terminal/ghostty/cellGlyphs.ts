@@ -1,9 +1,7 @@
 /**
- * Box-drawing lines and block elements painted as cell geometry instead of
- * font glyphs. Fonts rarely size these to the terminal cell: a fallback face
- * (Consolas has no quadrant blocks) uses its own advance and shifts the rest of
- * a text run sideways, and glyph height stops short of the line height, so
- * borders show gaps and block art such as the Claude Code logo falls apart.
+ * Box-drawing lines and block elements painted as cell geometry: font glyphs
+ * rarely fill the cell, so fallback advances shift text runs and short glyphs
+ * leave gaps in borders and block art.
  */
 
 // Stroke weight toward up, right, down, left: 0 none, 1 light, 2 heavy.
@@ -75,7 +73,7 @@ function blockCodePoint(text: string): number | null {
  * glyphs must share it, or a clear at a fractional DPR erases part of the row
  * above and leaves a seam through block art.
  */
-export function deviceSnap(context: CanvasRenderingContext2D): (value: number) => number {
+function deviceSnap(context: CanvasRenderingContext2D): (value: number) => number {
   const scale = typeof context.getTransform === "function" ? context.getTransform().a || 1 : 1;
   return (value) => Math.round(value * scale) / scale;
 }

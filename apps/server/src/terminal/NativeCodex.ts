@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
@@ -56,7 +56,7 @@ const decodeUserInput = Schema.decodeUnknownEffect(
   Schema.Array(CodexSchema.V2TurnStartParams__UserInput),
 );
 
-export function nativeCodexPrompt(params: Record<string, unknown>): string {
+function nativeCodexPrompt(params: Record<string, unknown>): string {
   const input = Array.isArray(params.input) ? params.input : [];
   const parts = input
     .map((item) => {
@@ -117,12 +117,12 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
     Effect.mapError(error),
   );
   const upstream = yield* Effect.acquireRelease(
-    Effect.callback<NodeSocket.NodeWS.WebSocket, ProviderAdapterProtocolError>((resume) => {
-      const ws = new NodeSocket.NodeWS.WebSocket(url);
+    Effect.callback<NodeWS.WebSocket, ProviderAdapterProtocolError>((resume) => {
+      const ws = new NodeWS.WebSocket(url);
       ws.once("open", () => resume(Effect.succeed(ws)));
       ws.once("error", (cause) => resume(Effect.fail(error(cause))));
       return Effect.sync(() => {
-        if (ws.readyState !== NodeSocket.NodeWS.WebSocket.OPEN) ws.terminate();
+        if (ws.readyState !== NodeWS.WebSocket.OPEN) ws.terminate();
       });
     }),
     (ws) => Effect.sync(() => ws.terminate()),
@@ -135,7 +135,7 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
   let requestOrdinal = 0;
   let nativeThreadId = options.resumeId ?? "";
   let nativeTurnId = "";
-  let cli: NodeSocket.NodeWS.WebSocket | undefined;
+  let cli: NodeWS.WebSocket | undefined;
   const cliIds = new Map<string, string | number>();
   const cliTurnIds = new Set<string>();
   const approvalIds = new Set<string>();
@@ -299,11 +299,11 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
     persistExtendedHistory: true,
   });
   nativeThreadId = text(record(thread.thread).id);
-  if (!nativeThreadId) return yield* Effect.fail(error("Codex did not return a conversation id."));
+  if (!nativeThreadId) return yield* error("Codex did not return a conversation id.");
   const token = NodeCrypto.randomUUID();
   const server = yield* Effect.acquireRelease(
-    Effect.callback<NodeSocket.NodeWS.WebSocketServer, ProviderAdapterProtocolError>((resume) => {
-      const ws = new NodeSocket.NodeWS.WebSocketServer({
+    Effect.callback<NodeWS.WebSocketServer, ProviderAdapterProtocolError>((resume) => {
+      const ws = new NodeWS.WebSocketServer({
         host: "127.0.0.1",
         port: 0,
         maxPayload: 16 * 1024 * 1024,
@@ -322,7 +322,7 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
   const context = yield* Effect.context<never>();
   let activated = false;
   server.on("connection", (client) => {
-    if (cli?.readyState === NodeSocket.NodeWS.WebSocket.OPEN) {
+    if (cli?.readyState === NodeWS.WebSocket.OPEN) {
       client.close(1008, "This terminal already has a client.");
       return;
     }
@@ -445,7 +445,7 @@ export const makeNativeCodex = Effect.fn("terminal.makeNativeCodex")(function* (
   });
   const bound = server.address();
   if (typeof bound === "string" || bound === null)
-    return yield* Effect.fail(error("No native Codex bridge address."));
+    return yield* error("No native Codex bridge address.");
   return {
     nativeThreadId,
     token,

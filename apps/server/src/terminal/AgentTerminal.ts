@@ -7,6 +7,8 @@ import {
   MessageId,
   NativeTerminalError,
   ThreadId,
+  type TerminalAttachInput,
+  type TerminalAttachStreamEvent,
   type TerminalOpenInput,
   type TerminalCloseInput,
   type TerminalError,
@@ -51,6 +53,7 @@ import {
 import * as Registry from "./NativeTerminalRegistry.ts";
 import * as Manager from "./Manager.ts";
 import { makeNativeRuntime, type NativeRuntime } from "./NativeRuntime.ts";
+import { terminalOutputStream } from "./OutputProtocol.ts";
 import { makeNativeCodex } from "./NativeCodex.ts";
 import {
   codexThreadRuntimeParams,
@@ -69,11 +72,8 @@ export class AgentTerminal extends Context.Service<
     readonly open: (
       input: TerminalOpenInput,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
-    readonly attachStream: Manager.TerminalManager["Service"]["attachStream"];
+    readonly attachOutputStream: Manager.TerminalManager["Service"]["attachOutputStream"];
     readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
-    readonly restart: (
-      input: TerminalOpenInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
   }
 >()("t3/terminal/AgentTerminal") {}
 
@@ -194,8 +194,9 @@ export const layer = Layer.effect(
             ["preparing", "starting", "running", "waiting", "queued"].includes(run.status),
         )
       )
-        return yield* Effect.fail(
-          fail(threadId, "Finish the current turn and queued messages before switching views."),
+        return yield* fail(
+          threadId,
+          "Finish the current turn and queued messages before switching views.",
         );
       if (capturing) {
         yield* engine.streamStoredEventsFrom({ threadId, afterSequence: sequence }).pipe(
@@ -285,15 +286,11 @@ export const layer = Layer.effect(
         });
       const thread = yield* projections.getThread(threadId);
       if (thread.archivedAt !== null)
-        return yield* Effect.fail(
-          fail(threadId, "Reopen this thread before starting its terminal."),
-        );
+        return yield* fail(threadId, "Reopen this thread before starting its terminal.");
       yield* ensureIdle(threadId);
       const instance = yield* instances.getInstance(thread.modelSelection.instanceId);
       if (!instance || !["codex", "claudeAgent"].includes(instance.driverKind))
-        return yield* Effect.fail(
-          fail(threadId, "Terminal view is available for Codex and Claude Code."),
-        );
+        return yield* fail(threadId, "Terminal view is available for Codex and Claude Code.");
       const driver = instance.driverKind;
       const originalCapabilities = yield* instance.orchestrationAdapter.getCapabilities();
       const capabilities = {
@@ -314,11 +311,12 @@ export const layer = Layer.effect(
         thread,
         modelSelection: thread.modelSelection,
       });
-      if (!policy.cwd) return yield* Effect.fail(fail(threadId, "This thread has no workspace."));
+      if (!policy.cwd) return yield* fail(threadId, "This thread has no workspace.");
       const settings = yield* settingsService.getSettings;
       const instanceConfig =
         deriveProviderInstanceConfigMap(settings)[thread.modelSelection.instanceId];
       const baseEnv = yield* Manager.resolveProviderInstanceTerminalEnvironment({
+        deriveProviderInstanceConfigMap,
         serverSettings: settingsService,
         path,
         rawProviderInstanceId: thread.modelSelection.instanceId,
@@ -356,9 +354,7 @@ export const layer = Layer.effect(
               if (previousRunId) yield* awaitRunSettled(threadId, previousRunId);
               yield* ensureIdle(threadId);
               if (!registry.owns(threadId))
-                return yield* Effect.fail(
-                  fail(threadId, "This terminal has stopped. Restart it to continue."),
-                );
+                return yield* fail(threadId, "This terminal has stopped. Restart it to continue.");
               const commandId = CommandId.make(NodeCrypto.randomUUID());
               const messageId = MessageId.make(NodeCrypto.randomUUID());
               const ready = yield* Deferred.make<ProviderAdapterV2TurnInput>();
@@ -408,15 +404,13 @@ export const layer = Layer.effect(
       ) {
         const ready = pending.get(turnInput.message.messageId);
         if (!ready)
-          return yield* Effect.fail(
-            new ProviderAdapterTurnStartError({
-              driver,
-              threadId,
-              providerThreadId: turnInput.providerThread.id,
-              runId: turnInput.runId,
-              cause: "The native prompt was cancelled before its workspace was ready.",
-            }),
-          );
+          return yield* new ProviderAdapterTurnStartError({
+            driver,
+            threadId,
+            providerThreadId: turnInput.providerThread.id,
+            runId: turnInput.runId,
+            cause: "The native prompt was cancelled before its workspace was ready.",
+          });
         yield* Deferred.succeed(ready, turnInput);
       });
       const openNative: Parameters<typeof registry.register>[2] = Effect.fn(
@@ -475,6 +469,7 @@ export const layer = Layer.effect(
               ...(resumeId ? { resumeId } : {}),
               threadParams: {
                 ...codexThreadRuntimeParams({
+                  threadId,
                   mcpSession: mcp,
                   runtimePolicy: policy,
                   modelSelection: thread.modelSelection,
@@ -640,7 +635,7 @@ export const layer = Layer.effect(
           runtimePolicy: policy,
         });
         if (!nativeRuntime || !launchProcess)
-          return yield* Effect.fail(fail(threadId, "The native terminal did not start."));
+          return yield* fail(threadId, "The native terminal did not start.");
         yield* providerEvents.ingestNormalized({
           providerSessionId: sessionId,
           providerInstanceId: thread.modelSelection.instanceId,
@@ -700,47 +695,50 @@ export const layer = Layer.effect(
       yield* manager.close({ threadId, terminalId: AGENT_TERMINAL_ID });
       yield* release(threadId);
     });
+    const attach = Effect.fn("AgentTerminal.attach")(function* (
+      input: TerminalAttachInput,
+      viewerId: string,
+    ) {
+      // Reconnecting after a close must not restart the native agent.
+      if (input.resume && !entries.has(ThreadId.make(input.threadId))) {
+        const resync: Parameters<
+          typeof terminalOutputStream<TerminalAttachStreamEvent, TerminalError>
+        >[0] = (listener, registerCleanup) =>
+          manager.resyncStream(input, listener, registerCleanup);
+        return terminalOutputStream(resync, resync);
+      }
+      yield* open({ ...input, cwd: input.cwd ?? "" });
+      return manager.attachOutputStream(
+        {
+          threadId: input.threadId,
+          terminalId: AGENT_TERMINAL_ID,
+          ...(input.cols === undefined ? {} : { cols: input.cols }),
+          ...(input.rows === undefined ? {} : { rows: input.rows }),
+          ...(input.resume === undefined ? {} : { resume: input.resume }),
+          ...(input.maxHistoryBytes === undefined
+            ? {}
+            : { maxHistoryBytes: input.maxHistoryBytes }),
+        },
+        viewerId,
+      );
+    });
     return AgentTerminal.of({
-      open: (input) =>
-        lifecycle
+      open: Effect.fn("AgentTerminal.open")(function* (input) {
+        return yield* lifecycle
           .withPermits(1)(open(input))
-          .pipe(mapError(input.threadId, "Could not open the agent terminal.")),
-      attachStream: (input, listener, registerCleanup) =>
-        lifecycle
-          .withPermits(1)(
-            Effect.gen(function* () {
-              // Reconnecting after a close must not restart the native agent.
-              if (input.resume && !entries.has(ThreadId.make(input.threadId)))
-                return yield* manager.resyncStream(input, listener, registerCleanup);
-              yield* open({ ...input, cwd: input.cwd ?? "" });
-              return yield* manager.attachStream(
-                {
-                  threadId: input.threadId,
-                  terminalId: AGENT_TERMINAL_ID,
-                  cols: input.cols,
-                  rows: input.rows,
-                  resume: input.resume,
-                },
-                listener,
-                registerCleanup,
-              );
-            }),
-          )
-          .pipe(mapError(input.threadId, "Could not attach to the agent terminal.")),
-      close: (input) =>
-        lifecycle
+          .pipe(mapError(input.threadId, "Could not open the agent terminal."));
+      }),
+      attachOutputStream: (input, viewerId) =>
+        Stream.unwrap(
+          lifecycle
+            .withPermits(1)(attach(input, viewerId))
+            .pipe(mapError(input.threadId, "Could not attach to the agent terminal.")),
+        ),
+      close: Effect.fn("AgentTerminal.close")(function* (input) {
+        yield* lifecycle
           .withPermits(1)(close(input))
-          .pipe(mapError(input.threadId, "Could not close the agent terminal.")),
-      restart: (input) =>
-        lifecycle
-          .withPermits(1)(
-            close({
-              threadId: input.threadId,
-              terminalId: AGENT_TERMINAL_ID,
-              returnToChat: true,
-            }).pipe(Effect.andThen(open(input))),
-          )
-          .pipe(mapError(input.threadId, "Could not restart the agent terminal.")),
+          .pipe(mapError(input.threadId, "Could not close the agent terminal."));
+      }),
     });
   }),
 );

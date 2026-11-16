@@ -195,16 +195,14 @@ jobs:
 
       - name: Verify native terminal and update integration
         run: |
-          vp test run apps/server/src/terminal/NativeClaude.test.ts apps/server/src/terminal/NativeTerminal.integration.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/terminal/OutputProtocol.test.ts
-          vp exec tsc --noEmit --project apps/server/tsconfig.json
-          vp exec tsc --noEmit --project apps/web/tsconfig.json
+          vp test run apps/server/src/terminal/NativeClaude.test.ts apps/server/src/terminal/NativeTerminal.integration.test.ts apps/server/src/terminal/Manager.test.ts apps/server/src/terminal/OutputProtocol.test.ts apps/web/src/terminal/ghostty/cellGlyphs.test.ts
+          vp run --filter t3 typecheck
+          vp run --filter @t3tools/web typecheck
 
-      # @t3tools/desktop#build compiles the Linux browser secret helper.
-      - name: Install browser secret helper build libraries
-        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
-
+      # The Windows artifact carries no Linux browser secret helper, so the bundle-only
+      # build skips compiling it.
       - name: Build JS bundle
-        run: vp run build:desktop
+        run: vp run build:desktop:bundle
 
       - name: Upload JS bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

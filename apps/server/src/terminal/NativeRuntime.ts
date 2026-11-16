@@ -106,15 +106,13 @@ export const makeNativeRuntime = Effect.fn("terminal.makeNativeRuntime")(functio
     turnInput: ProviderAdapterV2TurnInput,
   ) {
     if (active)
-      return yield* Effect.fail(
-        new ProviderAdapterTurnStartError({
-          driver,
-          threadId: input.threadId,
-          providerThreadId: providerThread.id,
-          runId: turnInput.runId,
-          cause: "A native turn is already running.",
-        }),
-      );
+      return yield* new ProviderAdapterTurnStartError({
+        driver,
+        threadId: input.threadId,
+        providerThreadId: providerThread.id,
+        runId: turnInput.runId,
+        cause: "A native turn is already running.",
+      });
     providerThread = {
       ...turnInput.providerThread,
       nativeThreadRef: providerThread.nativeThreadRef,

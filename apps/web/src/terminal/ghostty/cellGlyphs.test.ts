@@ -10,7 +10,7 @@ function recordingContext(devicePixelRatio?: number) {
   const context = {
     canvas: { width: 400, height: 80 },
     globalAlpha: 1,
-    ...(devicePixelRatio === undefined ? {} : { getTransform: () => ({ a: devicePixelRatio }) }),
+    getTransform: () => ({ a: devicePixelRatio ?? 1, d: devicePixelRatio ?? 1 }),
     beginPath: () => {},
     clip: () => {},
     fillRect: (...args: number[]) => rects.push(args),

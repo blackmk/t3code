@@ -36,21 +36,27 @@ const make = Effect.sync(() => {
     }
   >();
   return NativeTerminalRegistry.of({
-    register: (threadId, sessionId, openSession) =>
+    register: Effect.fn("NativeTerminalRegistry.register")((threadId, sessionId, openSession) =>
       Effect.sync(() => {
         owners.set(threadId, { sessionId, openSession, commands: new Set() });
       }),
-    unregister: (threadId) =>
+    ),
+    unregister: Effect.fn("NativeTerminalRegistry.unregister")((threadId) =>
       Effect.sync(() => {
         owners.delete(threadId);
       }),
+    ),
     get: (threadId) => owners.get(threadId)?.openSession,
     owns: (threadId) => owners.has(threadId),
     ownsSession: (sessionId) =>
       Array.from(owners.values()).some((owner) => owner.sessionId === sessionId),
     admits: (threadId, commandId) => owners.get(threadId)?.commands.has(commandId) === true,
-    withInputCommand: (threadId, commandId, dispatch) =>
-      Effect.acquireUseRelease(
+    withInputCommand: Effect.fn("NativeTerminalRegistry.withInputCommand")(function* <A, E, R>(
+      threadId: ThreadId,
+      commandId: CommandId,
+      dispatch: Effect.Effect<A, E, R>,
+    ) {
+      return yield* Effect.acquireUseRelease(
         Effect.sync(() => {
           owners.get(threadId)?.commands.add(commandId);
         }),
@@ -59,7 +65,8 @@ const make = Effect.sync(() => {
           Effect.sync(() => {
             owners.get(threadId)?.commands.delete(commandId);
           }),
-      ),
+      );
+    }),
   });
 });
 

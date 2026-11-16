@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeWS from "@effect/platform-node/NodeWS";
 import { assert, it } from "@effect/vitest";
 import { NativeTerminalError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -37,11 +37,11 @@ it.effect.skipIf(!binary)(
               new NativeTerminalError({ threadId: "test", detail: "Deliberately rejected prompt" }),
             ),
           getRuntime: () => undefined,
-          readMcpSession: () => Effect.succeed(undefined),
+          readMcpSession: () => Effect.undefined,
         });
         const client = yield* Effect.acquireRelease(
-          Effect.callback<NodeSocket.NodeWS.WebSocket, Error>((resume) => {
-            const ws = new NodeSocket.NodeWS.WebSocket(bridge.url, {
+          Effect.callback<NodeWS.WebSocket, Error>((resume) => {
+            const ws = new NodeWS.WebSocket(bridge.url, {
               headers: { Authorization: `Bearer ${bridge.token}` },
             });
             ws.once("open", () => resume(Effect.succeed(ws)));
@@ -53,7 +53,7 @@ it.effect.skipIf(!binary)(
         const request = (method: string, params: unknown) =>
           Effect.callback<Record<string, unknown>, Error>((resume) => {
             const id = ++ordinal;
-            const listener = (data: NodeSocket.NodeWS.RawData) => {
+            const listener = (data: NodeWS.RawData) => {
               const response = record(decode(data.toString()));
               if (response.id !== id) return;
               client.off("message", listener);

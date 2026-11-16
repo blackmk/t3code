@@ -15,7 +15,7 @@ import {
   type ProviderAdapterV2TurnInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 
-export const NATIVE_CLAUDE_HOOK_CLIENT = String.raw`
+const NATIVE_CLAUDE_HOOK_CLIENT = String.raw`
 const chunks = [];
 let bytes = 0;
 process.stdin.on('data', chunk => {
@@ -94,7 +94,7 @@ const error = (cause: unknown) =>
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const powerShellQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
-export function nativeClaudeHookCommand(input: {
+function nativeClaudeHookCommand(input: {
   platform: NodeJS.Platform;
   executable: string;
   script: string;

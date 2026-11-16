@@ -56,6 +56,7 @@ export function useAgentTerminalView(options: {
     if (threadRef) setTerminal(threadRef, false);
     reportSwitchFailure(error);
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for the window-level toggle request while mounted
   useEffect(() => {
     const handler = () => {
       void toggle();

@@ -48,7 +48,6 @@ export function AgentTerminalView({
   const openRequestedRef = useRef(false);
   const open = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
   const resize = useAtomCommand(terminalEnvironment.resize, { reportFailure: false });
-  const restart = useAtomCommand(terminalEnvironment.restart, { reportFailure: false });
   const stop = useAtomCommand(terminalEnvironment.close, { reportFailure: false });
   const handleGridResize = useEffectEvent(async (cols: number, rows: number) => {
     gridRef.current = { cols, rows };
@@ -124,15 +123,27 @@ export function AgentTerminalView({
             onClick={async () => {
               setRestarting(true);
               try {
-                const result = await restart({
+                // Handing the conversation back first ends the old CLI and its native session.
+                const stopped = await stop({
                   environmentId: threadRef.environmentId,
                   input: {
                     threadId: threadRef.threadId,
                     terminalId: AGENT_TERMINAL_ID,
-                    cwd,
-                    ...(gridRef.current ?? { cols: 120, rows: 30 }),
+                    returnToChat: true,
                   },
                 });
+                const result =
+                  stopped._tag === "Failure"
+                    ? stopped
+                    : await open({
+                        environmentId: threadRef.environmentId,
+                        input: {
+                          threadId: threadRef.threadId,
+                          terminalId: AGENT_TERMINAL_ID,
+                          cwd,
+                          ...(gridRef.current ?? { cols: 120, rows: 30 }),
+                        },
+                      });
                 if (result._tag === "Failure") {
                   if (!isAtomCommandInterrupted(result)) throw squashAtomCommandFailure(result);
                   return;
@@ -165,11 +176,8 @@ export function AgentTerminalView({
           terminalLabel="Agent terminal"
           cwd={cwd}
           onSessionExited={() => setExited(true)}
-          focusRequestId={generation}
           autoFocus
           visible
-          resizeEpoch={generation}
-          drawerHeight={0}
           keybindings={keybindings}
           nativeAgent
           attachReady={attachReady}

@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -253,7 +254,13 @@ it.effect(
         ]) {
           yield* decodeProviderEvent(event);
         }
-      }).pipe(Effect.provide(Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer)));
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer).pipe(
+            Layer.provideMerge(NodeCrypto.layer),
+          ),
+        ),
+      );
     }),
 );
 
@@ -406,6 +413,12 @@ it.effect(
         assert.equal(reopened?.result, "Still good");
         const reviewChild = yield* engine.getThreadProjection(review.childThreadId!);
         assert.equal(reviewChild.messages.at(-1)?.text, "Still good");
-      }).pipe(Effect.provide(Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer)));
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(runtimeLayer, IdAllocator.layer, NodeServices.layer).pipe(
+            Layer.provideMerge(NodeCrypto.layer),
+          ),
+        ),
+      );
     }),
 );

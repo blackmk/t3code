@@ -111,9 +111,7 @@ it.effect(
         const submit = (text: string) =>
           Effect.gen(function* () {
             if (rejectPrompt)
-              return yield* Effect.fail(
-                new NativeTerminalError({ threadId, detail: "Workspace unavailable" }),
-              );
+              return yield* new NativeTerminalError({ threadId, detail: "Workspace unavailable" });
             const turn: ProviderAdapterV2TurnInput = {
               appThread,
               threadId,
